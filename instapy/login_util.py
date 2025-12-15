@@ -245,9 +245,9 @@ def login_user(
 
     # Hotfix - this check crashes more often than not -- plus in not necessary,
     # I can verify my own connection
-    if want_check_browser:
-        if not check_browser(browser, logfolder, logger, proxy_address):
-            return False
+    #if want_check_browser:
+    #    if not check_browser(browser, logfolder, logger, proxy_address):
+    #        return False
 
     ig_homepage = "https://www.instagram.com"
     web_address_navigator(browser, ig_homepage)
@@ -285,6 +285,16 @@ def login_user(
     except (WebDriverException, OSError, IOError):
         # Just info the user, not an error
         logger.info("- Cookie file not found, creating cookie...")
+
+    #Check if Cookie PopUp is visible
+    try:
+        cookie_elem = browser.find_element_by_xpath("//button[text()='Allow essential and optional cookies']")
+    except:
+        cookie_elem = None
+
+    if cookie_elem is not None:
+        cookie_elem.click()
+
 
     if login_state and cookie_loaded:
         # Cookie loaded and joined IG, dismiss following features if availables
@@ -469,7 +479,7 @@ def login_user(
             challenge_warn_msg = (
                 "Instagram initiated a challenge before allow your account to login. "
                 "At the moment there isn't a phone number linked to your Instagram "
-                "account. Please, add a phone number to your account, and try again."
+                "account. Plefase, add a phone number to your account, and try again."
             )
             logger.warning(challenge_warn_msg)
             update_activity(
@@ -636,6 +646,18 @@ def two_factor_authentication(browser, logger, security_codes):
         # 0000 is used if no codes were provided in constructor.
         code = random.choice(security_codes)
 
+        #Check if Cookie PopUp is visible
+        try:
+            #m2a_elem = browser.find_element_by_xpath("//div[text()='backup codes']")
+            m2a_elem = browser.find_element_by_xpath("//button[text()='backup codes']")
+            
+        except NoSuchElementException:
+            logger.warning("Can't find element backup codes")
+            m2a_elem = None
+
+        if m2a_elem is not None:
+            m2a_elem.click()
+
         try:
             # Check Security code is numeric
             int(code)
@@ -677,13 +699,13 @@ def two_factor_authentication(browser, logger, security_codes):
         except NoSuchElementException as e:
             # Unable to login to Instagram!
             logger.warning(
-                "- Secuirty code could not be written!\n\t{}".format(
+                "- Security code could not be written!\n\t{}".format(
                     str(e).encode("utf-8")
                 )
             )
         except ValueError:
             # Unable to login to Instagram!
-            logger.warning("- Secuirty code provided is not a number")
+            logger.warning("- Security code provided is not a number")
     else:
         # Two Factor Authentication is not enabled or the security code has
         # already been entered in previous session.

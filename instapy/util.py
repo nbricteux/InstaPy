@@ -1175,7 +1175,7 @@ def get_number_of_posts(browser):
 def get_relationship_counts(browser, username, logger):
     """Gets the followers & following counts of a given user"""
 
-    user_link = "https://www.instagram.com/{}/".format(username)
+    user_link = "https://www.instagram.com/{}/".format(username) + "?__a=1&__d=1"
 
     # check URL of the webpage, if it already is user's profile page,
     # then do not navigate to it again
@@ -2627,16 +2627,20 @@ def get_additional_data(browser):
     :return additional_data: Json data from window.__additionalData extracted from page source
     """
     additional_data = None
-    # soup = BeautifulSoup(browser.page_source, "html.parser")
-    # for text in soup(text=re.compile(r"window.__additionalDataLoaded")):
+
+    #soup = BeautifulSoup(browser.page_source, "html.parser")
+    #for text in soup(text=re.compile(r"window.__additionalDataLoaded")):
     #     if re.search("^window.__additionalDataLoaded", text):
     #         additional_data = json.loads(re.search("{.*}", text).group())
     #         break
+
     original_url = browser.current_url
     if not additional_data:
         browser.get('view-source:'+ browser.current_url +'?__a=1&__d=dis')
         text = browser.find_element(By.TAG_NAME, "pre").text
+        print(text)
         additional_data = json.loads(re.search("{.*}", text).group())
+
         browser.get(original_url)
 
     return additional_data
