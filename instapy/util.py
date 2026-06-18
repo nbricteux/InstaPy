@@ -2148,7 +2148,7 @@ def extract_text_from_element(elem):
     """
 
     # if element is valid and contains text withou spaces
-    if elem and hasattr(elem, "text") and elem.text and not re.search("\s", elem.text):
+    if elem and hasattr(elem, "text") and elem.text and not re.search("\\s", elem.text):
         return elem.text
 
     # if the element is not valid, return None

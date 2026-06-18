@@ -1,14 +1,16 @@
 # import built-in & third-party modules
 import os
-import zipfile
 import shutil
+import zipfile
 
 from os.path import sep
 from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.firefox.options import Options as Firefox_Options
+from selenium.webdriver.chrome.options import Options as Chrome_Options
+from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver import Remote
-from webdriverdownloader import GeckoDriverDownloader
+from webdriverdownloader import GeckoDriverDownloader, ChromeDriverDownloader
 
 # import InstaPy modules
 from .util import interruption_handler
@@ -52,6 +54,18 @@ def create_firefox_extension():
     return zip_file
 
 
+def get_chromedriver():
+    """Locate or download chromedriver."""
+    chrome_path = shutil.which("chromedriver") or shutil.which("chromedriver.exe")
+    if chrome_path:
+        return chrome_path
+
+    asset_path = use_assets()
+    cdd = ChromeDriverDownloader(asset_path, asset_path)
+    sym_path = cdd.download_and_install()[1]
+    return sym_path
+
+
 def set_selenium_local_session(
     proxy_address,
     proxy_port,
@@ -62,10 +76,12 @@ def set_selenium_local_session(
     disable_image_load,
     page_delay,
     geckodriver_path,
+    chromedriver_path,
     browser_executable_path,
     logfolder,
     logger,
     geckodriver_log_level,
+    browser_choice="firefox",
 ):
     """Starts local session for a selenium server.
     Default case scenario."""
@@ -73,69 +89,103 @@ def set_selenium_local_session(
     browser = None
     err_msg = ""
 
-    firefox_options = Firefox_Options()
+    browser_choice = (browser_choice or "firefox").lower()
 
-    if headless_browser:
-        firefox_options.add_argument("-headless")
+    if browser_choice == "chrome":
+        chrome_options = Chrome_Options()
 
-    if browser_profile_path is not None:
-        firefox_profile = webdriver.FirefoxProfile(browser_profile_path)
+        if headless_browser:
+            chrome_options.add_argument("--headless=new")
+
+        # set language and user agent
+        chrome_options.add_argument("--lang=en-US")
+        chrome_options.add_argument("--user-agent={}".format(Settings.user_agent))
+
+        if browser_executable_path is not None:
+            chrome_options.binary_location = browser_executable_path
+
+        if disable_image_load:
+            prefs = {"profile.managed_default_content_settings.images": 2}
+            chrome_options.add_experimental_option("prefs", prefs)
+
+        if proxy_address and proxy_port:
+            chrome_options.add_argument(
+                "--proxy-server=http://{}:{}".format(proxy_address, proxy_port)
+            )
+
+        # reduce automation fingerprints and mute audio
+        chrome_options.add_argument("--mute-audio")
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option("useAutomationExtension", False)
+
+        driver_path = chromedriver_path or get_chromedriver()
+        browser = webdriver.Chrome(
+            service=ChromeService(executable_path=driver_path), options=chrome_options
+        )
     else:
-        firefox_profile = webdriver.FirefoxProfile()
+        firefox_options = Firefox_Options()
 
-    if browser_executable_path is not None:
-        firefox_options.binary = browser_executable_path
+        if headless_browser:
+            firefox_options.add_argument("-headless")
 
-    # set "info" by default
-    # set "trace" for debubging, Development only
-    firefox_options.log.level = geckodriver_log_level
+        if browser_profile_path is not None:
+            firefox_profile = webdriver.FirefoxProfile(browser_profile_path)
+        else:
+            firefox_profile = webdriver.FirefoxProfile()
 
-    # set English language
-    firefox_profile.set_preference("intl.accept_languages", "en-US")
-    firefox_profile.set_preference("general.useragent.override", Settings.user_agent)
+        if browser_executable_path is not None:
+            firefox_options.binary = browser_executable_path
 
-    if disable_image_load:
-        # permissions.default.image = 2: Disable images load,
-        # this setting can improve pageload & save bandwidth
-        firefox_profile.set_preference("permissions.default.image", 2)
+        # set "info" by default
+        # set "trace" for debugging, Development only
+        firefox_options.log.level = geckodriver_log_level
 
-    if proxy_address and proxy_port:
-        firefox_profile.set_preference("network.proxy.type", 1)
-        firefox_profile.set_preference("network.proxy.http", proxy_address)
-        firefox_profile.set_preference("network.proxy.http_port", int(proxy_port))
-        firefox_profile.set_preference("network.proxy.ssl", proxy_address)
-        firefox_profile.set_preference("network.proxy.ssl_port", int(proxy_port))
+        # set English language
+        firefox_profile.set_preference("intl.accept_languages", "en-US")
+        firefox_profile.set_preference(
+            "general.useragent.override", Settings.user_agent
+        )
 
-    # mute audio while watching stories
-    firefox_profile.set_preference("media.volume_scale", "0.0")
+        if disable_image_load:
+            # permissions.default.image = 2: Disable images load,
+            # this setting can improve pageload & save bandwidth
+            firefox_profile.set_preference("permissions.default.image", 2)
 
-    # prevent Hide Selenium Extension: error
-    firefox_profile.set_preference("dom.webdriver.enabled", False)
-    firefox_profile.set_preference("useAutomationExtension", False)
-    firefox_profile.set_preference("general.platform.override", "iPhone")
-    firefox_profile.update_preferences()
+        if proxy_address and proxy_port:
+            firefox_profile.set_preference("network.proxy.type", 1)
+            firefox_profile.set_preference("network.proxy.http", proxy_address)
+            firefox_profile.set_preference("network.proxy.http_port", int(proxy_port))
+            firefox_profile.set_preference("network.proxy.ssl", proxy_address)
+            firefox_profile.set_preference("network.proxy.ssl_port", int(proxy_port))
 
-    # geckodriver log in specific user logfolder
-    geckodriver_log = "{}geckodriver.log".format(logfolder)
+        # mute audio while watching stories
+        firefox_profile.set_preference("media.volume_scale", "0.0")
 
-    # prefer user path before downloaded one
-    driver_path = geckodriver_path or get_geckodriver()
-    browser = webdriver.Firefox(
-        firefox_profile=firefox_profile,
-        executable_path=driver_path,
-        log_path=geckodriver_log,
-        options=firefox_options,
-    )
+        # prevent Hide Selenium Extension: error
+        firefox_profile.set_preference("dom.webdriver.enabled", False)
+        firefox_profile.set_preference("useAutomationExtension", False)
+        firefox_profile.set_preference("general.platform.override", "iPhone")
+        firefox_profile.update_preferences()
 
-    # add extension to hide selenium
-    browser.install_addon(create_firefox_extension(), temporary=True)
+        # geckodriver log in specific user logfolder
+        geckodriver_log = "{}geckodriver.log".format(logfolder)
 
-    # converts to custom browser
-    # browser = convert_selenium_browser(browser)
+        # prefer user path before downloaded one
+        driver_path = geckodriver_path or get_geckodriver()
+        browser = webdriver.Firefox(
+            firefox_profile=firefox_profile,
+            executable_path=driver_path,
+            log_path=geckodriver_log,
+            options=firefox_options,
+        )
 
-    # authenticate with popup alert window
-    if proxy_username and proxy_password:
-        proxy_authentication(browser, logger, proxy_username, proxy_password)
+        # add extension to hide selenium
+        browser.install_addon(create_firefox_extension(), temporary=True)
+
+        # authenticate with popup alert window
+        if proxy_username and proxy_password:
+            proxy_authentication(browser, logger, proxy_username, proxy_password)
 
     browser.implicitly_wait(page_delay)
 

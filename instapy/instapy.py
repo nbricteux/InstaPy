@@ -131,6 +131,8 @@ class InstaPy:
         want_check_browser: bool = True,
         browser_executable_path: str = None,
         geckodriver_log_level: str = "info",  # "info" by default
+        browser_choice: str = "firefox",
+        chromedriver_path: str = None,
     ):
         print("InstaPy Version: {}".format(__version__))
         cli_args = parse_cli_args()
@@ -337,10 +339,12 @@ class InstaPy:
                 disable_image_load,
                 page_delay,
                 geckodriver_path,
+                chromedriver_path,
                 browser_executable_path,
                 self.logfolder,
                 self.logger,
                 geckodriver_log_level,
+                browser_choice,
             )
             if len(err_msg) > 0:
                 raise InstaPyError(err_msg)

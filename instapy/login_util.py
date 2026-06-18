@@ -251,6 +251,20 @@ def login_user(
 
     ig_homepage = "https://www.instagram.com"
     web_address_navigator(browser, ig_homepage)
+    
+    # Handle cookie popup immediately when page loads
+    sleep(2)
+    try:
+        # Try multiple variations of the cookie accept button
+        cookie_elem = browser.find_element(
+            By.XPATH, 
+            "//button[contains(text(),'Allow') or contains(text(),'Accept') or contains(text(),'cookies')]"
+        )
+        logger.info("- Cookie popup detected, accepting cookies...")
+        cookie_elem.click()
+        sleep(2)
+    except NoSuchElementException:
+        logger.info("- No cookie popup detected or already accepted")
 
     cookie_file = "{0}{1}_cookie.pkl".format(logfolder, username)
     cookie_loaded = None
@@ -285,16 +299,6 @@ def login_user(
     except (WebDriverException, OSError, IOError):
         # Just info the user, not an error
         logger.info("- Cookie file not found, creating cookie...")
-
-    #Check if Cookie PopUp is visible
-    try:
-        cookie_elem = browser.find_element_by_xpath("//button[text()='Allow essential and optional cookies']")
-    except:
-        cookie_elem = None
-
-    if cookie_elem is not None:
-        cookie_elem.click()
-
 
     if login_state and cookie_loaded:
         # Cookie loaded and joined IG, dismiss following features if availables
@@ -342,41 +346,49 @@ def login_user(
 
     web_address_navigator(browser, ig_homepage)
 
+    # Instead of trying to find and click "Log in" link, go directly to login page
+    # This is more reliable than trying to find the link on the homepage
+    login_url = "https://www.instagram.com/accounts/login/"
+    
     # Check if the first div is 'Create an Account' or 'Log In'
-    try:
-        login_elem = browser.find_element(
-            By.XPATH, read_xpath(login_user.__name__, "login_elem")
-        )
-    except NoSuchElementException:
-        logger.warning("Login A/B test detected! Trying another string...")
+    # Only try to click if we're on the homepage, not already on login page
+    if "/accounts/login" not in browser.current_url:
+        login_elem = None
         try:
             login_elem = browser.find_element(
-                By.XPATH,
-                read_xpath(login_user.__name__, "login_elem_no_such_exception"),
+                By.XPATH, read_xpath(login_user.__name__, "login_elem")
             )
         except NoSuchElementException:
-            logger.warning("Could not pass the login A/B test. Trying last string...")
+            logger.warning("Login A/B test detected! Trying another string...")
             try:
                 login_elem = browser.find_element(
                     By.XPATH,
-                    read_xpath(login_user.__name__, "login_elem_no_such_exception_2"),
+                    read_xpath(login_user.__name__, "login_elem_no_such_exception"),
                 )
-            except NoSuchElementException as e:
-                # NF: start
-                logger.exception(
-                    "Login A/B test failed!\n\t{}".format(str(e).encode("utf-8"))
-                )
-                return False
-                # NF: end
+            except NoSuchElementException:
+                logger.warning("Could not pass the login A/B test. Trying third string...")
+                try:
+                    login_elem = browser.find_element(
+                        By.XPATH,
+                        read_xpath(login_user.__name__, "login_elem_no_such_exception_2"),
+                    )
+                except NoSuchElementException:
+                    logger.warning("Could not pass the login A/B test. Navigating directly to login page...")
+                    # Instead of failing, just navigate directly to login page
+                    web_address_navigator(browser, login_url)
+                    login_elem = None
 
     if login_elem is not None:
         try:
+            logger.info("- Clicking 'Log in' link...")
             (ActionChains(browser).move_to_element(login_elem).click().perform())
         except MoveTargetOutOfBoundsException:
             login_elem.click()
 
         # update server calls
         update_activity(browser, state=None)
+    else:
+        logger.info("- Navigated directly to login page")
 
     # Enter username and password and logs the user in
     # Sometimes the element name isn't 'Username' and 'Password'
@@ -426,13 +438,140 @@ def login_user(
 
     sleep(1)
 
-    (
-        ActionChains(browser)
-        .move_to_element(input_password)
-        .click()
-        .send_keys(Keys.ENTER)
-        .perform()
-    )
+    # Find and click the login button instead of pressing ENTER
+    logger.info("- Looking for login submit button...")
+    
+    # Wait longer for the button to appear (Instagram SPA needs time to render)
+    sleep(3)
+    
+    try:
+        # Try multiple XPath variations for the login button with explicit wait
+        login_button = None
+        max_attempts = 5
+        attempt = 0
+        
+        while login_button is None and attempt < max_attempts:
+            attempt += 1
+            logger.info(f"- Attempt {attempt}/{max_attempts} to find login button...")
+            
+            # Try 1: Button with type submit
+            try:
+                login_button = browser.find_element(By.XPATH, "//button[@type='submit']")
+                logger.info("- Found login button by type='submit'")
+                break
+            except NoSuchElementException:
+                pass
+            
+            # Try 2: Button containing "Log in" text (case insensitive)
+            if login_button is None:
+                try:
+                    login_button = browser.find_element(
+                        By.XPATH, 
+                        "//button[contains(translate(text(), 'LOGIN', 'login'), 'log in')]"
+                    )
+                    logger.info("- Found login button by text content (case insensitive)")
+                    break
+                except NoSuchElementException:
+                    pass
+            
+            # Try 3: Any button in a form with username/password inputs
+            if login_button is None:
+                try:
+                    login_button = browser.find_element(
+                        By.XPATH, 
+                        "//form[.//input[@name='username'] and .//input[@name='password']]//button[@type='submit']"
+                    )
+                    logger.info("- Found login button in form with username/password")
+                    break
+                except NoSuchElementException:
+                    pass
+            
+            # Try 4: Button with specific div structure (Instagram often uses nested divs)
+            if login_button is None:
+                try:
+                    login_button = browser.find_element(
+                        By.XPATH, 
+                        "//button[.//div[contains(text(),'Log in') or contains(text(),'Log In')]]"
+                    )
+                    logger.info("- Found login button with nested div")
+                    break
+                except NoSuchElementException:
+                    pass
+            
+            # Try 5: Any enabled button after password field
+            if login_button is None:
+                try:
+                    login_button = browser.find_element(
+                        By.XPATH, 
+                        "//input[@name='password']/following::button[not(@disabled)][1]"
+                    )
+                    logger.info("- Found button following password field")
+                    break
+                except NoSuchElementException:
+                    pass
+            
+            # Wait before next attempt
+            if login_button is None and attempt < max_attempts:
+                logger.info(f"- Button not found, waiting 2 seconds before retry...")
+                sleep(2)
+        
+        if login_button is not None:
+            logger.info("- Clicking login button...")
+            try:
+                # Scroll button into view first
+                browser.execute_script("arguments[0].scrollIntoView(true);", login_button)
+                sleep(0.5)
+                
+                # Try ActionChains first
+                (
+                    ActionChains(browser)
+                    .move_to_element(login_button)
+                    .click()
+                    .perform()
+                )
+                logger.info("- Login button clicked successfully")
+            except Exception as e:
+                logger.warning("- ActionChains click failed, trying direct click: {}".format(str(e)))
+                try:
+                    login_button.click()
+                    logger.info("- Direct click successful")
+                except Exception as e2:
+                    logger.warning("- Direct click also failed: {}".format(str(e2)))
+                    # Try JavaScript click as last resort
+                    browser.execute_script("arguments[0].click();", login_button)
+                    logger.info("- JavaScript click executed")
+        else:
+            raise NoSuchElementException("Could not find login button with any method after {} attempts".format(max_attempts))
+            
+    except NoSuchElementException as e:
+        # Fallback to pressing ENTER if button not found
+        logger.warning("- Login button not found, pressing ENTER as fallback...")
+        logger.warning("- Error: {}".format(str(e)))
+        
+        # Save screenshot for debugging
+        try:
+            screenshot_path = "{}login_button_not_found.png".format(logfolder)
+            browser.save_screenshot(screenshot_path)
+            logger.info("- Screenshot saved to: {}".format(screenshot_path))
+        except Exception as screenshot_error:
+            logger.warning("- Could not save screenshot: {}".format(str(screenshot_error)))
+        
+        # Try to log the page source for debugging
+        try:
+            page_source_path = "{}login_page_source.html".format(logfolder)
+            with open(page_source_path, "w", encoding="utf-8") as f:
+                f.write(browser.page_source)
+            logger.info("- Page source saved to: {}".format(page_source_path))
+        except Exception as source_error:
+            logger.warning("- Could not save page source: {}".format(str(source_error)))
+        
+        (
+            ActionChains(browser)
+            .move_to_element(input_password)
+            .click()
+            .send_keys(Keys.ENTER)
+            .perform()
+        )
 
     # update server calls for both 'click' and 'send_keys' actions
     for _ in range(4):
@@ -641,36 +780,53 @@ def two_factor_authentication(browser, logger, security_codes):
     if "two_factor" in browser.current_url:
 
         logger.info("- Two Factor Authentication is enabled...")
+        logger.info("- Current URL: {}".format(browser.current_url))
 
         # Chose one code from the security_codes list
         # 0000 is used if no codes were provided in constructor.
         code = random.choice(security_codes)
+        logger.info("- Using security code from provided list...")
 
-        #Check if Cookie PopUp is visible
+        # Check if backup codes button is visible
         try:
-            #m2a_elem = browser.find_element_by_xpath("//div[text()='backup codes']")
-            m2a_elem = browser.find_element_by_xpath("//button[text()='backup codes']")
-            
+            # Try multiple variations of the backup codes button
+            m2a_elem = browser.find_element(
+                By.XPATH, 
+                "//button[contains(text(),'backup codes') or contains(text(),'Backup codes') or contains(text(),'recovery code')]"
+            )
         except NoSuchElementException:
-            logger.warning("Can't find element backup codes")
-            m2a_elem = None
+            try:
+                # Alternative: look for any button/link that contains backup/recovery
+                m2a_elem = browser.find_element(
+                    By.XPATH,
+                    "//*[contains(text(),'backup') or contains(text(),'recovery')]"
+                )
+            except NoSuchElementException:
+                logger.warning("Can't find backup codes button - will try direct code entry")
+                m2a_elem = None
 
         if m2a_elem is not None:
+            logger.info("- Clicking on backup codes option...")
             m2a_elem.click()
+            sleep(2)
 
         try:
             # Check Security code is numeric
             int(code)
 
             verification_code = read_xpath(login_user.__name__, "verification_code")
-            explicit_wait(browser, "VOEL", [verification_code, "XPath"], logger)
+            explicit_wait(browser, "VOEL", [verification_code, "XPath"], logger, 10)
 
             security_code = browser.find_element(By.XPATH, verification_code)
+            
+            logger.info("- Found verification code input field...")
 
             #  Confirm blue button
             confirm = browser.find_element(
                 By.XPATH, read_xpath(login_user.__name__, "confirm")
             )
+            
+            logger.info("- Found confirm button...")
 
             (
                 ActionChains(browser)
@@ -679,6 +835,8 @@ def two_factor_authentication(browser, logger, security_codes):
                 .send_keys(code)
                 .perform()
             )
+            
+            logger.info("- Entered security code...")
 
             sleep(random.randint(1, 3))
 
@@ -689,21 +847,28 @@ def two_factor_authentication(browser, logger, security_codes):
                 .send_keys(Keys.ENTER)
                 .perform()
             )
+            
+            logger.info("- Clicked confirm button...")
 
             # update server calls for both 'click' and 'send_keys' actions
             for _ in range(2):
                 update_activity(browser, state=None)
 
             sleep(random.randint(1, 3))
+            
+            logger.info("- Two Factor Authentication completed successfully")
 
         except NoSuchElementException as e:
             # Unable to login to Instagram!
             logger.warning(
-                "- Security code could not be written!\n\t{}".format(
+                "- Security code field not found! Instagram may have changed the 2FA page structure.\n\t{}".format(
                     str(e).encode("utf-8")
                 )
             )
+            logger.warning("- You may need to manually enter the code or update the XPath selectors")
         except ValueError:
+            # Unable to login to Instagram!
+            logger.warning("- Security code provided is not a number")
             # Unable to login to Instagram!
             logger.warning("- Security code provided is not a number")
     else:
