@@ -22,3 +22,4 @@ setuptools_rust>=0.11.6
 six>=1.11.0
 urllib3>=1.24.1
 webdriverdownloader>=1.1.0.3
+webdriver-manager>=4.0.0

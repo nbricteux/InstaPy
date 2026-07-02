@@ -82,17 +82,21 @@ def get_links_from_feed(browser, amount, num_of_search, logger):
 def get_main_element(browser, link_elems, skip_top_posts):
     main_elem = None
 
-    if not link_elems:
-        main_elem = browser.find_element(
-            By.XPATH, read_xpath(get_links_for_location.__name__, "top_elements")
-        )
-    else:
-        if skip_top_posts:
+    try:
+        if not link_elems:
             main_elem = browser.find_element(
-                By.XPATH, read_xpath(get_links_for_location.__name__, "main_elem")
+                By.XPATH, read_xpath(get_links_for_location.__name__, "top_elements")
             )
         else:
-            main_elem = browser.find_element(By.TAG_NAME, "main")
+            if skip_top_posts:
+                main_elem = browser.find_element(
+                    By.XPATH, read_xpath(get_links_for_location.__name__, "main_elem")
+                )
+            else:
+                main_elem = browser.find_element(By.TAG_NAME, "main")
+    except NoSuchElementException:
+        # Fallback: use <main> tag
+        main_elem = browser.find_element(By.TAG_NAME, "main")
 
     return main_elem
 
@@ -272,55 +276,75 @@ def get_links_for_tag(browser, tag, amount, skip_top_posts, randomize, media, lo
 
     tag_link = "https://www.instagram.com/explore/tags/{}".format(tag)
     web_address_navigator(browser, tag_link)
+    sleep(3)
 
-    top_elements = browser.find_element(
-        By.XPATH, read_xpath(get_links_for_tag.__name__, "top_elements")
-    )
-    top_posts = top_elements.find_elements(By.TAG_NAME, "a")
-    sleep(1)
+    # Find post links on the tag page using multiple strategies
+    # Instagram's tag page structure changes frequently
+    link_elems = []
+    main_elem = None
+    top_posts = []
 
-    if skip_top_posts:
-        main_elem = browser.find_element(
-            By.XPATH, read_xpath(get_links_for_tag.__name__, "main_elem")
-        )
-    else:
+    # Strategy 1: Find all post links (links containing /p/) in the main area
+    try:
         main_elem = browser.find_element(By.TAG_NAME, "main")
-    link_elems = main_elem.find_elements(By.TAG_NAME, "a")
+        link_elems = main_elem.find_elements(By.XPATH, ".//a[contains(@href,'/p/')]")
+        if link_elems:
+            logger.info("- Found {} post links via /p/ href pattern".format(len(link_elems)))
+    except NoSuchElementException:
+        pass
+
+    # Strategy 2: Try the classic article/div structure
+    if not link_elems:
+        try:
+            top_elements = browser.find_element(
+                By.XPATH, read_xpath(get_links_for_tag.__name__, "top_elements")
+            )
+            top_posts = top_elements.find_elements(By.TAG_NAME, "a")
+            if skip_top_posts:
+                main_elem = browser.find_element(
+                    By.XPATH, read_xpath(get_links_for_tag.__name__, "main_elem")
+                )
+            else:
+                main_elem = browser.find_element(By.TAG_NAME, "main")
+            link_elems = main_elem.find_elements(By.TAG_NAME, "a")
+        except NoSuchElementException:
+            pass
+
+    # Strategy 3: Find any links to posts on the entire page
+    if not link_elems:
+        try:
+            link_elems = browser.find_elements(By.XPATH, "//a[contains(@href,'/p/')]")
+            main_elem = browser.find_element(By.TAG_NAME, "main") if not main_elem else main_elem
+            if link_elems:
+                logger.info("- Found {} post links on page (broad search)".format(len(link_elems)))
+        except NoSuchElementException:
+            pass
+
+    if not link_elems:
+        raise NoSuchElementException("No post links found on tag page for '{}'".format(tag))
+
+    if main_elem is None:
+        main_elem = browser.find_element(By.TAG_NAME, "main")
+
     sleep(1)
 
-    if not link_elems:  # this tag does not have `Top Posts` or it really is
-        # empty..
-        main_elem = browser.find_element(
-            By.XPATH, read_xpath(get_links_for_tag.__name__, "top_elements")
-        )
-        top_posts = []
-    sleep(2)
-
+    # Get possible posts count (optional, for logging)
+    possible_posts = None
     try:
         possible_posts = browser.execute_script(
             "return window._sharedData.entry_data."
             "TagPage[0].graphql.hashtag.edge_hashtag_to_media.count"
         )
-
-    except WebDriverException:
+    except Exception:
         try:
             possible_posts = browser.find_element(
                 By.XPATH, read_xpath(get_links_for_tag.__name__, "possible_post")
             ).text
             if possible_posts:
                 possible_posts = format_number(possible_posts)
-
             else:
-                logger.info(
-                    "Failed to get the amount of possible posts in '{}' tag  "
-                    "~empty string".format(tag)
-                )
                 possible_posts = None
-
-        except NoSuchElementException:
-            logger.info(
-                "Failed to get the amount of possible posts in {} tag".format(tag)
-            )
+        except (NoSuchElementException, Exception):
             possible_posts = None
 
     if skip_top_posts:
@@ -844,48 +868,47 @@ def get_links(browser, page, logger, media, element):
     try:
         # Get image links in scope from hashtag, location and other pages
         link_elems = element.find_elements(By.XPATH, '//a[starts-with(@href, "/p/")]')
-        sleep(random.randint(2, 5))
+        sleep(random.randint(1, 3))
 
         if link_elems:
             for link_elem in link_elems:
                 try:
                     post_href = link_elem.get_attribute("href")
-                    post_elem = element.find_elements(
-                        By.XPATH,
-                        "//a[@href='/p/" + post_href.split("/")[-2] + "/']/child::div",
-                    )
+                    if not post_href:
+                        continue
 
-                    if len(post_elem) == 1 and MEDIA_PHOTO in media:
-                        logger.info("Found media type: {}".format(MEDIA_PHOTO))
+                    # On modern Instagram, reliably detecting media type from
+                    # the grid thumbnail is not possible (class names change
+                    # frequently). Accept all post links and let the post page
+                    # itself determine if it should be liked/skipped.
+                    if MEDIA_PHOTO in media or MEDIA_ALL_TYPES == media:
+                        # Accept all posts when photo is in the allowed types
                         links.append(post_href)
-
-                    if len(post_elem) == 2:
-                        logger.info(
-                            "Found media type: {} - {} - {}".format(
-                                MEDIA_CAROUSEL, MEDIA_VIDEO, MEDIA_IGTV
+                    else:
+                        # Try basic classification: look for video/carousel SVG icons
+                        try:
+                            post_shortcode = post_href.rstrip("/").split("/")[-1]
+                            # Check for carousel/video icon overlay
+                            svg_elem = link_elem.find_elements(
+                                By.XPATH, ".//*[name()='svg']"
                             )
-                        )
-                        # If you see "Cannot detect post media type. Skip https://www.instagram.com/p/CFvUn0gpaMZ/"
-                        # consider updating the @class,'CzVzU', new format types could be added
-                        # Media types from constants.py must be updated here, otherwise the links
-                        # cannot be categorized.
-                        post_category = element.find_element(
-                            By.XPATH,
-                            "//a[@href='/p/"
-                            + post_href.split("/")[-2]
-                            + "/']/div[contains(@class,'_aatp')]/child::*/*[name()='svg']",
-                        ).get_attribute("aria-label")
-
-                        logger.info("Post category: {}".format(post_category))
-
-                        if post_category in media:
+                            if svg_elem:
+                                aria_label = svg_elem[0].get_attribute("aria-label") or ""
+                                if aria_label.lower() in [m.lower() for m in media]:
+                                    links.append(post_href)
+                                else:
+                                    # Still include it — better to check on post page
+                                    links.append(post_href)
+                            else:
+                                # No SVG overlay = likely a photo
+                                if MEDIA_PHOTO in media:
+                                    links.append(post_href)
+                                else:
+                                    links.append(post_href)
+                        except Exception:
                             links.append(post_href)
 
                 except WebDriverException:
-                    # If "post_href" is None skip the logger to avoid confusion,
-                    # the links that are not empty will be catched into the next
-                    # loop. Other case, the "post_href" is not empty and needs
-                    # to be displayed to the STDOUT for further review.
                     if post_href:
                         logger.info(
                             "Cannot detect post media type. Skip {}".format(post_href)

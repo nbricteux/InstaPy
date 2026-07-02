@@ -10,7 +10,18 @@ from selenium.webdriver.firefox.options import Options as Firefox_Options
 from selenium.webdriver.chrome.options import Options as Chrome_Options
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver import Remote
-from webdriverdownloader import GeckoDriverDownloader, ChromeDriverDownloader
+try:
+    from webdriver_manager.chrome import ChromeDriverManager
+    from webdriver_manager.firefox import GeckoDriverManager
+except ImportError:
+    ChromeDriverManager = None
+    GeckoDriverManager = None
+
+try:
+    from webdriverdownloader import GeckoDriverDownloader, ChromeDriverDownloader
+except ImportError:
+    GeckoDriverDownloader = None
+    ChromeDriverDownloader = None
 
 # import InstaPy modules
 from .util import interruption_handler
@@ -60,10 +71,18 @@ def get_chromedriver():
     if chrome_path:
         return chrome_path
 
-    asset_path = use_assets()
-    cdd = ChromeDriverDownloader(asset_path, asset_path)
-    sym_path = cdd.download_and_install()[1]
-    return sym_path
+    # Use webdriver-manager (preferred, actively maintained)
+    if ChromeDriverManager:
+        return ChromeDriverManager().install()
+
+    # Legacy fallback using webdriverdownloader
+    if ChromeDriverDownloader:
+        asset_path = use_assets()
+        cdd = ChromeDriverDownloader(asset_path, asset_path)
+        sym_path = cdd.download_and_install()[1]
+        return sym_path
+
+    return None
 
 
 def set_selenium_local_session(
@@ -119,10 +138,14 @@ def set_selenium_local_session(
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option("useAutomationExtension", False)
 
-        driver_path = chromedriver_path or get_chromedriver()
-        browser = webdriver.Chrome(
-            service=ChromeService(executable_path=driver_path), options=chrome_options
-        )
+        if chromedriver_path:
+            browser = webdriver.Chrome(
+                service=ChromeService(executable_path=chromedriver_path),
+                options=chrome_options,
+            )
+        else:
+            # Let Selenium Manager auto-resolve the correct chromedriver version
+            browser = webdriver.Chrome(options=chrome_options)
     else:
         firefox_options = Firefox_Options()
 

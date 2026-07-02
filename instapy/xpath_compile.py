@@ -184,7 +184,7 @@ xpath["login_user"] = {
     "suspicious_login_attempt": "//p[text()='Suspicious Login Attempt']",
     "error_alert": "//p[@id='slfErrorAlert']",
     "verification_code": "//input[@name='verificationCode']",
-    "confirm": "//button[contains(text(),'Confirm') or contains(text(),'Submit') or @type='submit']",
+    "confirm": "//button[contains(text(),'Confirm') or contains(text(),'Continue') or contains(text(),'Submit') or @type='submit']",
 }
 
 xpath["open_comment_section"] = {

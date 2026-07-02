@@ -4552,6 +4552,27 @@ class InstaPy:
         )
         return grabbed_followers
 
+    def export_followers(self, username=None, output_path=None, max_followers=None):
+        """
+        Export followers list to JSON file by scrolling through the followers dialog.
+
+        Args:
+            username: Username whose followers to export (default: self)
+            output_path: Path to save JSON file (default: ./followers_{username}.json)
+            max_followers: Maximum number of followers to collect (None = all)
+
+        Returns:
+            list: List of follower usernames
+        """
+        from .followers_export import export_followers as _export_followers
+
+        if username is None:
+            username = self.username
+
+        return _export_followers(
+            self.browser, username, self.logger, output_path, max_followers
+        )
+
     def grab_following(
         self,
         username: str = None,

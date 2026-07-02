@@ -496,6 +496,9 @@ def getUserData(
 ):
     shared_data = get_shared_data(browser)
 
+    if shared_data is None:
+        return None
+
     # Sometimes shared_data["entry_data"]["ProfilePage"][0] is empty, but get_additional_data()
     # fetches all data needed
     get_key = [shared_data]
@@ -505,12 +508,18 @@ def getUserData(
     else:
         data = get_additional_data(browser)
 
-    if query.find(".") == -1:
-        data = data[query]
-    else:
-        subobjects = query.split(".")
-        for subobject in subobjects:
-            data = data[subobject]
+    if data is None:
+        return None
+
+    try:
+        if query.find(".") == -1:
+            data = data[query]
+        else:
+            subobjects = query.split(".")
+            for subobject in subobjects:
+                data = data[subobject]
+    except (KeyError, TypeError, IndexError):
+        return None
 
     return data
 
@@ -1175,114 +1184,130 @@ def get_number_of_posts(browser):
 def get_relationship_counts(browser, username, logger):
     """Gets the followers & following counts of a given user"""
 
-    user_link = "https://www.instagram.com/{}/".format(username) + "?__a=1&__d=1"
+    # Navigate to the user's profile page (NOT the deprecated ?__a=1 API)
+    user_link = "https://www.instagram.com/{}/".format(username)
 
-    # check URL of the webpage, if it already is user's profile page,
-    # then do not navigate to it again
     web_address_navigator(browser, user_link)
+    sleep(3)
 
+    followers_count = None
+    following_count = None
+
+    # Strategy 1: Try to get counts from profile page meta/header
+    # Modern Instagram shows counts as text in the profile header
     try:
-        followers_count = browser.execute_script(
-            "return window._sharedData.entry_data."
-            "ProfilePage[0].graphql.user.edge_followed_by.count"
+        followers_elem = browser.find_element(
+            By.XPATH,
+            "//a[contains(@href,'/followers')]/span | //a[contains(@href,'/followers')]//span"
+        )
+        followers_count = format_number(followers_elem.text)
+        logger.info("- Followers count found via link: {}".format(followers_count))
+    except (NoSuchElementException, Exception):
+        pass
+
+    if followers_count is None:
+        try:
+            # Try the header section with list items (classic layout)
+            followers_elem = browser.find_element(
+                By.XPATH,
+                "//ul/li[2]//span[@class] | //ul/li[2]//span"
+            )
+            followers_count = format_number(followers_elem.text)
+            logger.info("- Followers count found via list: {}".format(followers_count))
+        except (NoSuchElementException, Exception):
+            pass
+
+    if followers_count is None:
+        try:
+            # Try aria-label or title attribute containing "followers"
+            elem = browser.find_element(
+                By.XPATH,
+                "//*[contains(@title,'follower') or contains(@aria-label,'follower')]"
+            )
+            followers_count = format_number(elem.get_attribute("title") or elem.text)
+            logger.info("- Followers count found via title/aria: {}".format(followers_count))
+        except (NoSuchElementException, Exception):
+            pass
+
+    if followers_count is None:
+        try:
+            # Bloks framework: look for spans near "followers" text
+            spans = browser.find_elements(By.XPATH, "//span[contains(text(),'followers') or contains(text(),'Followers')]")
+            for span in spans:
+                text = span.text
+                # Format: "123 followers" or "1,234 followers"
+                parts = text.split()
+                if len(parts) >= 1:
+                    try:
+                        followers_count = format_number(parts[0])
+                        logger.info("- Followers count parsed from text: {}".format(followers_count))
+                        break
+                    except (ValueError, Exception):
+                        pass
+        except (NoSuchElementException, Exception):
+            pass
+
+    if followers_count is None:
+        logger.info(
+            "Failed to get followers count of '{}'  ~empty "
+            "list".format(username.encode("utf-8"))
         )
 
-    except WebDriverException:
-        try:
-            followers_count = format_number(
-                browser.find_element(
-                    By.XPATH,
-                    str(
-                        read_xpath(get_relationship_counts.__name__, "followers_count")
-                    ),
-                ).text
-            )
-        except NoSuchElementException:
-            try:
-                browser.execute_script("location.reload()")
-                update_activity(browser, state=None)
-
-                followers_count = browser.execute_script(
-                    "return window._sharedData.entry_data."
-                    "ProfilePage[0].graphql.user.edge_followed_by.count"
-                )
-
-            except WebDriverException:
-                try:
-                    topCount_elements = browser.find_elements(
-                        By.XPATH,
-                        read_xpath(
-                            get_relationship_counts.__name__, "topCount_elements"
-                        ),
-                    )
-
-                    if topCount_elements:
-                        followers_count = format_number(topCount_elements[1].text)
-                    else:
-                        logger.info(
-                            "Failed to get followers count of '{}'  ~empty "
-                            "list".format(username.encode("utf-8"))
-                        )
-                        followers_count = None
-
-                except NoSuchElementException:
-                    logger.error(
-                        "Error occurred during getting the followers count "
-                        "of '{}'\n".format(username.encode("utf-8"))
-                    )
-                    followers_count = None
-
+    # Get following count
     try:
-        following_count = browser.execute_script(
-            "return window._sharedData.entry_data."
-            "ProfilePage[0].graphql.user.edge_follow.count"
+        following_elem = browser.find_element(
+            By.XPATH,
+            "//a[contains(@href,'/following')]/span | //a[contains(@href,'/following')]//span"
         )
+        following_count = format_number(following_elem.text)
+        logger.info("- Following count found via link: {}".format(following_count))
+    except (NoSuchElementException, Exception):
+        pass
 
-    except WebDriverException:
+    if following_count is None:
         try:
-            following_count = format_number(
-                browser.find_element(
-                    By.XPATH,
-                    str(
-                        read_xpath(get_relationship_counts.__name__, "following_count")
-                    ),
-                ).text
+            following_elem = browser.find_element(
+                By.XPATH,
+                "//ul/li[3]//span[@class] | //ul/li[3]//span"
             )
+            following_count = format_number(following_elem.text)
+            logger.info("- Following count found via list: {}".format(following_count))
+        except (NoSuchElementException, Exception):
+            pass
 
-        except NoSuchElementException:
-            try:
-                browser.execute_script("location.reload()")
-                update_activity(browser, state=None)
+    if following_count is None:
+        try:
+            # Try aria-label or title attribute containing "following"
+            elem = browser.find_element(
+                By.XPATH,
+                "//*[contains(@title,'following') or contains(@aria-label,'following')]"
+            )
+            following_count = format_number(elem.get_attribute("title") or elem.text)
+            logger.info("- Following count found via title/aria: {}".format(following_count))
+        except (NoSuchElementException, Exception):
+            pass
 
-                following_count = browser.execute_script(
-                    "return window._sharedData.entry_data."
-                    "ProfilePage[0].graphql.user.edge_follow.count"
-                )
+    if following_count is None:
+        try:
+            spans = browser.find_elements(By.XPATH, "//span[contains(text(),'following') or contains(text(),'Following')]")
+            for span in spans:
+                text = span.text
+                parts = text.split()
+                if len(parts) >= 1:
+                    try:
+                        following_count = format_number(parts[0])
+                        logger.info("- Following count parsed from text: {}".format(following_count))
+                        break
+                    except (ValueError, Exception):
+                        pass
+        except (NoSuchElementException, Exception):
+            pass
 
-            except WebDriverException:
-                try:
-                    topCount_elements = browser.find_elements(
-                        By.XPATH,
-                        read_xpath(
-                            get_relationship_counts.__name__, "topCount_elements"
-                        ),
-                    )
-
-                    if topCount_elements:
-                        following_count = format_number(topCount_elements[2].text)
-                    else:
-                        logger.info(
-                            "Failed to get following count of '{}'  ~empty "
-                            "list".format(username.encode("utf-8"))
-                        )
-                        following_count = None
-
-                except (NoSuchElementException, IndexError):
-                    logger.error(
-                        "\nError occurred during getting the following count "
-                        "of '{}'\n".format(username.encode("utf-8"))
-                    )
-                    following_count = None
+    if following_count is None:
+        logger.info(
+            "Failed to get following count of '{}'  ~empty "
+            "list".format(username.encode("utf-8"))
+        )
 
     Event().profile_data_updated(username, followers_count, following_count)
     return followers_count, following_count
@@ -1631,45 +1656,100 @@ def check_authorization(browser, username, method, logger, notify=True):
             profile_link = "https://www.instagram.com/{}/".format(username)
             web_address_navigator(browser, profile_link)
 
-        # if user is not logged in, `activity_counts` will be `None`- JS `null`
+        # Strategy 1: Try legacy _sharedData approach
+        activity_counts = None
+        activity_counts_new = None
+
         try:
             activity_counts = browser.execute_script(
                 "return window._sharedData.activity_counts"
             )
-
         except WebDriverException:
             try:
                 browser.execute_script("location.reload()")
                 update_activity(browser, state=None)
-
                 activity_counts = browser.execute_script(
                     "return window._sharedData.activity_counts"
                 )
-
             except WebDriverException:
                 activity_counts = None
 
-        # if user is not logged in, `activity_counts_new` will be `None`- JS
-        # `null`
         try:
             activity_counts_new = browser.execute_script(
                 "return window._sharedData.config.viewer"
             )
-
         except WebDriverException:
             try:
                 browser.execute_script("location.reload()")
                 activity_counts_new = browser.execute_script(
                     "return window._sharedData.config.viewer"
                 )
-
             except WebDriverException:
                 activity_counts_new = None
 
-        if activity_counts is None and activity_counts_new is None:
+        # If legacy _sharedData worked, use its result
+        if activity_counts is not None or activity_counts_new is not None:
+            return True
+
+        # Strategy 2: Check if we're on the login page (not logged in)
+        current_url = get_current_url(browser)
+        if current_url and "/accounts/login" in current_url:
             if notify is True:
                 logger.critical("--> '{}' is not logged in!\n".format(username))
             return False
+
+        # Strategy 3: Look for logged-in indicators in the DOM
+        # Modern Instagram uses navigation elements and profile avatars
+        try:
+            # Check for navigation with role attribute (Bloks framework)
+            browser.find_element(
+                By.XPATH,
+                "//*[@role='navigation']"
+            )
+            return True
+        except Exception:
+            pass
+
+        try:
+            # Check for Home icon SVG (present when logged in)
+            browser.find_element(
+                By.XPATH,
+                "//*[local-name()='svg' and (@aria-label='Home' or @aria-label='home')]"
+            )
+            return True
+        except Exception:
+            pass
+
+        try:
+            # Check for profile link in page
+            browser.find_element(
+                By.XPATH,
+                "//a[contains(@href,'/{}/')]".format(username)
+            )
+            return True
+        except Exception:
+            pass
+
+        try:
+            # Check for nav element (classic Instagram)
+            browser.find_element(By.XPATH, "//nav")
+            return True
+        except Exception:
+            pass
+
+        # Strategy 4: Check cookies for sessionid (most reliable indicator)
+        try:
+            cookies = browser.get_cookies()
+            for cookie in cookies:
+                if cookie.get("name") == "sessionid" and cookie.get("value"):
+                    return True
+        except Exception:
+            pass
+
+        # None of the strategies confirmed login
+        if notify is True:
+            logger.critical("--> '{}' is not logged in!\n".format(username))
+        return False
 
     return True
 
@@ -1996,6 +2076,7 @@ def smart_run(session, threaded=False):
                 "*" * 70, file_path
             )
         )
+        raise
     except KeyboardInterrupt:
         clean_exit("You have exited successfully.")
     finally:
@@ -2237,7 +2318,7 @@ def save_account_progress(browser, username, logger):
                 "VALUES (?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%S'), "
                 "strftime('%Y-%m-%d %H:%M:%S'))"
             )
-            cur.execute(sql, (id, followers, following, posts))
+            cur.execute(sql, (id, followers, following, posts or 0))
             conn.commit()
     except Exception:
         logger.exception("message")
@@ -2620,43 +2701,165 @@ class CustomizedArgumentParser(ArgumentParser):
 
 def get_additional_data(browser):
     """
-    Get additional data object from page source
-    Idea and Code by alokkumarsbg
+    Get additional data object from page source.
+    Tries multiple strategies since the ?__a=1 API is deprecated.
 
     :param browser: The selenium webdriver instance
-    :return additional_data: Json data from window.__additionalData extracted from page source
+    :return additional_data: Json data or None if unavailable
     """
     additional_data = None
 
-    #soup = BeautifulSoup(browser.page_source, "html.parser")
-    #for text in soup(text=re.compile(r"window.__additionalDataLoaded")):
-    #     if re.search("^window.__additionalDataLoaded", text):
-    #         additional_data = json.loads(re.search("{.*}", text).group())
-    #         break
+    # Strategy 1: Try window.__additionalData from current page
+    try:
+        additional_data = browser.execute_script("""
+            try {
+                var keys = Object.keys(window.__additionalData || {});
+                if (keys.length > 0) {
+                    return window.__additionalData[keys[0]].data;
+                }
+            } catch(e) {}
+            return null;
+        """)
+        if additional_data:
+            return additional_data
+    except Exception:
+        pass
 
-    original_url = browser.current_url
-    if not additional_data:
-        browser.get('view-source:'+ browser.current_url +'?__a=1&__d=dis')
-        text = browser.find_element(By.TAG_NAME, "pre").text
-        print(text)
-        additional_data = json.loads(re.search("{.*}", text).group())
+    # Strategy 2: Try window._sharedData for post data
+    try:
+        additional_data = browser.execute_script("""
+            try {
+                var data = window._sharedData;
+                if (data && data.entry_data) {
+                    if (data.entry_data.PostPage) {
+                        return data.entry_data.PostPage[0];
+                    }
+                    if (data.entry_data.ProfilePage) {
+                        return data.entry_data.ProfilePage[0];
+                    }
+                }
+            } catch(e) {}
+            return null;
+        """)
+        if additional_data:
+            return additional_data
+    except Exception:
+        pass
 
-        browser.get(original_url)
+    # Strategy 3: Use the /api/v1/media endpoint via XHR from the browser
+    # Extract shortcode from current URL (handle query strings like ?q=#tag)
+    try:
+        current_url = browser.current_url
+        import re as _re
+        shortcode_match = _re.search(r'/p/([A-Za-z0-9_-]+)', current_url)
+        if not shortcode_match:
+            shortcode_match = _re.search(r'/reel/([A-Za-z0-9_-]+)', current_url)
 
-    return additional_data
+        if shortcode_match:
+            shortcode = shortcode_match.group(1)
+            result = browser.execute_script("""
+                var shortcode = arguments[0];
+                
+                // Try /api/v1/media endpoint (needs numeric media ID from shortcode)
+                // First, convert shortcode to media ID
+                function shortcodeToMediaId(shortcode) {
+                    var alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+                    var id = BigInt(0);
+                    for (var i = 0; i < shortcode.length; i++) {
+                        id = id * BigInt(64) + BigInt(alphabet.indexOf(shortcode[i]));
+                    }
+                    return id.toString();
+                }
+                
+                var mediaId = shortcodeToMediaId(shortcode);
+                
+                // Try /api/v1/media/{id}/info/
+                try {
+                    var xhr = new XMLHttpRequest();
+                    xhr.open('GET', '/api/v1/media/' + mediaId + '/info/', false);
+                    xhr.setRequestHeader('X-IG-App-ID', '936619743392459');
+                    xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+                    xhr.send();
+                    if (xhr.status === 200) {
+                        return xhr.responseText;
+                    }
+                } catch(e) {}
+                
+                // Try graphql query with shortcode
+                try {
+                    var variables = JSON.stringify({
+                        shortcode: shortcode,
+                        child_comment_count: 3,
+                        fetch_comment_count: 40,
+                        parent_comment_count: 24,
+                        has_threaded_comments: true
+                    });
+                    var xhr2 = new XMLHttpRequest();
+                    xhr2.open('GET', '/graphql/query/?query_hash=b3055c01b4b222b8a47dc12b090e4e64&variables=' + encodeURIComponent(variables), false);
+                    xhr2.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+                    xhr2.send();
+                    if (xhr2.status === 200) {
+                        return xhr2.responseText;
+                    }
+                } catch(e) {}
+                
+                return null;
+            """, shortcode)
+
+            if result:
+                import json as _json
+                additional_data = _json.loads(result)
+                return additional_data
+    except Exception:
+        pass
+
+    return None
 
 
 def get_shared_data(browser):
     """
-    Get shared data object from page source
-    Code by schealex
+    Get shared data object from page source.
+
+    Note: The ?__a=1 API endpoint has been deprecated by Instagram.
+    This function now tries multiple fallbacks.
 
     :param browser: The selenium webdriver instance
-    :return shared_data: Json data from window._sharedData extracted from page source
+    :return shared_data: Json data or None if unavailable
     """
     shared_data = None
-    browser.get('view-source:'+ browser.current_url +'?__a=1&__d=dis')
-    text = browser.find_element(By.TAG_NAME, "pre").text
-    shared_data = json.loads(re.search("{.*}", text).group())
 
-    return shared_data
+    # Strategy 1: Try window._sharedData directly from current page
+    try:
+        shared_data = browser.execute_script("return window._sharedData")
+        if shared_data:
+            return shared_data
+    except Exception:
+        pass
+
+    # Strategy 2: Try __additionalData
+    try:
+        shared_data = browser.execute_script(
+            "return window.__additionalData[Object.keys(window.__additionalData)[0]].data"
+        )
+        if shared_data:
+            return shared_data
+    except Exception:
+        pass
+
+    # Strategy 3: The deprecated view-source approach (likely won't work)
+    try:
+        original_url = browser.current_url
+        browser.get('view-source:' + original_url + '?__a=1&__d=dis')
+        text = browser.find_element(By.TAG_NAME, "pre").text
+        shared_data = json.loads(re.search("{.*}", text).group())
+        browser.get(original_url)
+        return shared_data
+    except Exception:
+        # Navigate back if we went to view-source
+        try:
+            if 'view-source:' in browser.current_url:
+                browser.back()
+        except Exception:
+            pass
+
+    return None

@@ -454,15 +454,28 @@ def login_user(
             attempt += 1
             logger.info(f"- Attempt {attempt}/{max_attempts} to find login button...")
             
-            # Try 1: Button with type submit
+            # Try 1: Instagram Bloks framework - div with role="button" and aria-label="Log in"
+            # This is the current Instagram login page structure (wbloks framework)
             try:
-                login_button = browser.find_element(By.XPATH, "//button[@type='submit']")
-                logger.info("- Found login button by type='submit'")
+                login_button = browser.find_element(
+                    By.XPATH,
+                    "//div[@role='button'][@aria-label='Log in']"
+                )
+                logger.info("- Found login button by div[role='button'][aria-label='Log in']")
                 break
             except NoSuchElementException:
                 pass
             
-            # Try 2: Button containing "Log in" text (case insensitive)
+            # Try 2: Button with type submit (classic Instagram)
+            if login_button is None:
+                try:
+                    login_button = browser.find_element(By.XPATH, "//button[@type='submit']")
+                    logger.info("- Found login button by type='submit'")
+                    break
+                except NoSuchElementException:
+                    pass
+            
+            # Try 3: Button containing "Log in" text (case insensitive)
             if login_button is None:
                 try:
                     login_button = browser.find_element(
@@ -474,7 +487,19 @@ def login_user(
                 except NoSuchElementException:
                     pass
             
-            # Try 3: Any button in a form with username/password inputs
+            # Try 4: Any div[role='button'] containing "Log in" text (Bloks variant)
+            if login_button is None:
+                try:
+                    login_button = browser.find_element(
+                        By.XPATH,
+                        "//div[@role='button'][.//span[contains(text(),'Log in') or contains(text(),'Log In')]]"
+                    )
+                    logger.info("- Found login button by div[role='button'] with 'Log in' span text")
+                    break
+                except NoSuchElementException:
+                    pass
+            
+            # Try 5: Any button in a form with username/password inputs
             if login_button is None:
                 try:
                     login_button = browser.find_element(
@@ -486,7 +511,7 @@ def login_user(
                 except NoSuchElementException:
                     pass
             
-            # Try 4: Button with specific div structure (Instagram often uses nested divs)
+            # Try 6: Button with specific div structure (Instagram often uses nested divs)
             if login_button is None:
                 try:
                     login_button = browser.find_element(
@@ -498,14 +523,14 @@ def login_user(
                 except NoSuchElementException:
                     pass
             
-            # Try 5: Any enabled button after password field
+            # Try 7: CSS selector fallback for Bloks framework
             if login_button is None:
                 try:
                     login_button = browser.find_element(
-                        By.XPATH, 
-                        "//input[@name='password']/following::button[not(@disabled)][1]"
+                        By.CSS_SELECTOR,
+                        "div[data-bloks-name='bk.components.Flexbox'][role='button'][aria-label='Log in']"
                     )
-                    logger.info("- Found button following password field")
+                    logger.info("- Found login button by CSS selector (Bloks framework)")
                     break
                 except NoSuchElementException:
                     pass
@@ -522,24 +547,40 @@ def login_user(
                 browser.execute_script("arguments[0].scrollIntoView(true);", login_button)
                 sleep(0.5)
                 
-                # Try ActionChains first
+                # Try multiple click strategies for reliability
+                tag_name = login_button.tag_name.lower()
+                
+                # Strategy A: ActionChains (simulates real user interaction)
+                try:
+                    (
+                        ActionChains(browser)
+                        .move_to_element(login_button)
+                        .click()
+                        .perform()
+                    )
+                    logger.info("- Login button clicked via ActionChains")
+                except Exception as e:
+                    logger.warning("- ActionChains click failed: {}".format(str(e)))
+                    # Strategy B: Direct .click()
+                    try:
+                        login_button.click()
+                        logger.info("- Login button clicked via direct click")
+                    except Exception as e2:
+                        logger.warning("- Direct click failed: {}".format(str(e2)))
+                        # Strategy C: JavaScript click as last resort
+                        browser.execute_script("arguments[0].click();", login_button)
+                        logger.info("- Login button clicked via JavaScript")
+            except Exception as e:
+                logger.warning("- All button click methods failed: {}".format(str(e)))
+                # Final fallback: press Enter on the password field
+                logger.info("- Falling back to pressing ENTER on password field...")
                 (
                     ActionChains(browser)
-                    .move_to_element(login_button)
+                    .move_to_element(input_password)
                     .click()
+                    .send_keys(Keys.ENTER)
                     .perform()
                 )
-                logger.info("- Login button clicked successfully")
-            except Exception as e:
-                logger.warning("- ActionChains click failed, trying direct click: {}".format(str(e)))
-                try:
-                    login_button.click()
-                    logger.info("- Direct click successful")
-                except Exception as e2:
-                    logger.warning("- Direct click also failed: {}".format(str(e2)))
-                    # Try JavaScript click as last resort
-                    browser.execute_script("arguments[0].click();", login_button)
-                    logger.info("- JavaScript click executed")
         else:
             raise NoSuchElementException("Could not find login button with any method after {} attempts".format(max_attempts))
             
@@ -576,6 +617,45 @@ def login_user(
     # update server calls for both 'click' and 'send_keys' actions
     for _ in range(4):
         update_activity(browser, state=None)
+
+    # Wait for login to process - Instagram needs time after credentials submit
+    logger.info("- Waiting for login to process...")
+    sleep(5)
+
+    # Check if login form is still visible (password field present).
+    # If the password field is gone, the login button click worked and
+    # we've moved to 2FA, challenge, or the feed.
+    current_url = browser.current_url
+    logger.info("- Current URL after login attempt: {}".format(current_url))
+    
+    password_still_present = False
+    try:
+        browser.find_element(By.XPATH, "//input[@name='password']")
+        password_still_present = True
+    except NoSuchElementException:
+        password_still_present = False
+
+    if password_still_present:
+        logger.info("- Password field still present, login button click may not have worked. Trying ENTER...")
+        try:
+            input_password_retry = browser.find_element(
+                By.XPATH, read_xpath(login_user.__name__, "input_password")
+            )
+            (
+                ActionChains(browser)
+                .move_to_element(input_password_retry)
+                .click()
+                .send_keys(Keys.ENTER)
+                .perform()
+            )
+            # update server calls
+            for _ in range(2):
+                update_activity(browser, state=None)
+            sleep(5)
+        except Exception as e:
+            logger.warning("- ENTER fallback failed: {}".format(str(e)))
+    else:
+        logger.info("- Password field gone, login form submitted successfully")
 
     # Check if account is protected with Two Factor Authentication
     two_factor_authentication(browser, logger, security_codes)
@@ -669,11 +749,66 @@ def login_user(
         browser.get(ig_homepage)
 
     # wait until page fully load
-    explicit_wait(browser, "PFL", [], logger, 5)
+    explicit_wait(browser, "PFL", [], logger, 10)
 
-    # Check if user is logged-in (If there's two 'nav' elements)
-    nav = browser.find_element(By.XPATH, read_xpath(login_user.__name__, "nav"))
-    if nav is not None:
+    # Check if user is logged-in using multiple strategies
+    # Instagram's modern layout may not have a traditional <nav> element
+    logged_in = False
+
+    # Strategy 1: Check URL - if we're no longer on /accounts/login, likely logged in
+    current_url = browser.current_url
+    if (
+        "/accounts/login" not in current_url
+        and "/challenge" not in current_url
+        and "instagram.com" in current_url
+    ):
+        logged_in = True
+        logger.info("- Login detected via URL change: {}".format(current_url))
+
+    # Strategy 2: Look for nav element (classic Instagram)
+    if not logged_in:
+        try:
+            nav = browser.find_element(By.XPATH, "//nav")
+            if nav is not None:
+                logged_in = True
+                logger.info("- Login detected via nav element")
+        except NoSuchElementException:
+            pass
+
+    # Strategy 3: Look for Home icon SVG (modern Instagram)
+    if not logged_in:
+        try:
+            browser.find_element(
+                By.XPATH,
+                "//*[local-name()='svg' and (@aria-label='Home' or @aria-label='home')]"
+            )
+            logged_in = True
+            logger.info("- Login detected via Home icon SVG")
+        except NoSuchElementException:
+            pass
+
+    # Strategy 4: Look for profile link or avatar in navigation
+    if not logged_in:
+        try:
+            browser.find_element(
+                By.XPATH,
+                "//a[contains(@href,'/{}/')]".format(username)
+            )
+            logged_in = True
+            logger.info("- Login detected via profile link")
+        except NoSuchElementException:
+            pass
+
+    # Strategy 5: Check for role="navigation" attribute (Bloks framework)
+    if not logged_in:
+        try:
+            browser.find_element(By.XPATH, "//*[@role='navigation']")
+            logged_in = True
+            logger.info("- Login detected via role='navigation' element")
+        except NoSuchElementException:
+            pass
+
+    if logged_in:
         # create cookie for username and save it
         cookies_list = browser.get_cookies()
 
@@ -777,7 +912,35 @@ def two_factor_authentication(browser, logger, security_codes):
     # Wait until page is loaded after user and password were introduced
     sleep(random.randint(3, 5))
 
-    if "two_factor" in browser.current_url:
+    # Detect 2FA page via URL or page content
+    is_two_factor_page = False
+    current_url = browser.current_url
+    
+    if "two_factor" in current_url:
+        is_two_factor_page = True
+    else:
+        # Check page content for 2FA indicators (modern Instagram)
+        try:
+            browser.find_element(
+                By.XPATH,
+                "//*[contains(text(),'authentication app') or contains(text(),'security code') or contains(text(),'6-digit code') or contains(text(),'two-factor')]"
+            )
+            is_two_factor_page = True
+        except NoSuchElementException:
+            pass
+        
+        # Also check for a code input field with no password field (likely 2FA)
+        if not is_two_factor_page:
+            try:
+                browser.find_element(
+                    By.XPATH,
+                    "//input[contains(@placeholder,'Code') or contains(@placeholder,'code') or @name='verificationCode']"
+                )
+                is_two_factor_page = True
+            except NoSuchElementException:
+                pass
+
+    if is_two_factor_page:
 
         logger.info("- Two Factor Authentication is enabled...")
         logger.info("- Current URL: {}".format(browser.current_url))
@@ -788,45 +951,152 @@ def two_factor_authentication(browser, logger, security_codes):
         logger.info("- Using security code from provided list...")
 
         # Check if backup codes button is visible
+        # On modern Instagram, this may appear as "Try another way" link
         try:
-            # Try multiple variations of the backup codes button
+            # Try: "Try another way" link/button (new Instagram 2FA page)
             m2a_elem = browser.find_element(
                 By.XPATH, 
-                "//button[contains(text(),'backup codes') or contains(text(),'Backup codes') or contains(text(),'recovery code')]"
+                "//*[contains(text(),'Try another way') or contains(text(),'try another way')]"
             )
-        except NoSuchElementException:
+            logger.info("- Found 'Try another way' option, clicking...")
+            (ActionChains(browser).move_to_element(m2a_elem).click().perform())
+            sleep(3)
+            
+            # After clicking "Try another way", a choice page appears with radio options.
+            # We need to select "Backup code" and then click "Continue"
+            backup_selected = False
+            
+            # Try clicking the "Backup code" radio/row by its container or label
             try:
-                # Alternative: look for any button/link that contains backup/recovery
-                m2a_elem = browser.find_element(
+                # Click on the row/container that contains "Backup code" text
+                backup_option = browser.find_element(
                     By.XPATH,
-                    "//*[contains(text(),'backup') or contains(text(),'recovery')]"
+                    "//*[contains(text(),'Backup code') or contains(text(),'backup code')]//ancestor::div[@role='button' or @role='radio' or @tabindex]"
                 )
-            except NoSuchElementException:
-                logger.warning("Can't find backup codes button - will try direct code entry")
-                m2a_elem = None
+                logger.info("- Found backup code option (ancestor container), clicking...")
+                (ActionChains(browser).move_to_element(backup_option).click().perform())
+                backup_selected = True
+            except (NoSuchElementException, Exception):
+                pass
+            
+            if not backup_selected:
+                try:
+                    # Try clicking the radio circle/input near "Backup code"
+                    backup_option = browser.find_element(
+                        By.XPATH,
+                        "//input[@type='radio'][following-sibling::*[contains(text(),'Backup')] or preceding-sibling::*[contains(text(),'Backup')]]"
+                    )
+                    logger.info("- Found backup code radio input, clicking...")
+                    browser.execute_script("arguments[0].click();", backup_option)
+                    backup_selected = True
+                except (NoSuchElementException, Exception):
+                    pass
+            
+            if not backup_selected:
+                try:
+                    # Try: click the parent div/label of the "Backup code" text using JS
+                    backup_text = browser.find_element(
+                        By.XPATH,
+                        "//*[contains(text(),'Backup code') or contains(text(),'backup code')]"
+                    )
+                    # Click the parent element which is likely the clickable row
+                    parent = backup_text.find_element(By.XPATH, "./..")
+                    logger.info("- Found backup code text, clicking parent element...")
+                    browser.execute_script("arguments[0].click();", parent)
+                    backup_selected = True
+                except (NoSuchElementException, Exception):
+                    pass
 
-        if m2a_elem is not None:
-            logger.info("- Clicking on backup codes option...")
-            m2a_elem.click()
-            sleep(2)
+            if not backup_selected:
+                try:
+                    # Last resort: find all clickable rows and click the second one
+                    # (first is "Authentication app", second is "Backup code")
+                    rows = browser.find_elements(
+                        By.XPATH,
+                        "//div[@role='button'] | //div[@tabindex='0'] | //label"
+                    )
+                    if len(rows) >= 2:
+                        logger.info("- Clicking second option row (backup code)...")
+                        browser.execute_script("arguments[0].click();", rows[1])
+                        backup_selected = True
+                except (NoSuchElementException, Exception):
+                    pass
+
+            if backup_selected:
+                logger.info("- Backup code option selected, clicking Continue...")
+                sleep(1)
+                # Click "Continue" button
+                try:
+                    continue_btn = browser.find_element(
+                        By.XPATH,
+                        "//button[contains(text(),'Continue') or contains(text(),'continue')] | //div[@role='button'][contains(.,'Continue')]"
+                    )
+                    (ActionChains(browser).move_to_element(continue_btn).click().perform())
+                    sleep(3)
+                    logger.info("- Continue button clicked, waiting for code input page...")
+                except NoSuchElementException:
+                    logger.warning("- Continue button not found, trying ENTER...")
+                    from selenium.webdriver.common.keys import Keys as K
+                    ActionChains(browser).send_keys(K.ENTER).perform()
+                    sleep(3)
+            else:
+                logger.warning("- Could not select backup code option")
+
+        except NoSuchElementException:
+            # Try legacy backup codes button
+            try:
+                m2a_elem = browser.find_element(
+                    By.XPATH, 
+                    "//button[contains(text(),'backup codes') or contains(text(),'Backup codes') or contains(text(),'recovery code')]"
+                )
+                logger.info("- Found legacy backup codes button, clicking...")
+                m2a_elem.click()
+                sleep(2)
+            except NoSuchElementException:
+                logger.info("- No backup codes button found - will try direct code entry")
 
         try:
             # Check Security code is numeric
             int(code)
 
-            verification_code = read_xpath(login_user.__name__, "verification_code")
-            explicit_wait(browser, "VOEL", [verification_code, "XPath"], logger, 10)
+            # Try to find the verification code input field with multiple selectors
+            security_code = None
+            
+            # Try 1: Standard name='verificationCode'
+            verification_code_xp = read_xpath(login_user.__name__, "verification_code")
+            try:
+                explicit_wait(browser, "VOEL", [verification_code_xp, "XPath"], logger, 10)
+                security_code = browser.find_element(By.XPATH, verification_code_xp)
+                logger.info("- Found verification code input by name='verificationCode'")
+            except Exception:
+                pass
+            
+            # Try 2: Input with placeholder 'Code' (new Instagram 2FA page)
+            if security_code is None:
+                try:
+                    security_code = browser.find_element(
+                        By.XPATH,
+                        "//input[contains(@placeholder,'Code') or contains(@placeholder,'code') or contains(@aria-label,'Code') or contains(@aria-label,'code')]"
+                    )
+                    logger.info("- Found verification code input by placeholder/aria-label 'Code'")
+                except NoSuchElementException:
+                    pass
+            
+            # Try 3: Any text input on the 2FA page (usually there's only one)
+            if security_code is None:
+                try:
+                    security_code = browser.find_element(
+                        By.XPATH,
+                        "//input[@type='text' or @type='number' or @type='tel']"
+                    )
+                    logger.info("- Found verification code input by type (text/number/tel)")
+                except NoSuchElementException:
+                    pass
 
-            security_code = browser.find_element(By.XPATH, verification_code)
+            if security_code is None:
+                raise NoSuchElementException("Could not find verification code input field")
             
             logger.info("- Found verification code input field...")
-
-            #  Confirm blue button
-            confirm = browser.find_element(
-                By.XPATH, read_xpath(login_user.__name__, "confirm")
-            )
-            
-            logger.info("- Found confirm button...")
 
             (
                 ActionChains(browser)
@@ -836,19 +1106,60 @@ def two_factor_authentication(browser, logger, security_codes):
                 .perform()
             )
             
-            logger.info("- Entered security code...")
+            logger.info("- Entered security code: {}".format(code))
 
             sleep(random.randint(1, 3))
 
-            (
-                ActionChains(browser)
-                .move_to_element(confirm)
-                .click()
-                .send_keys(Keys.ENTER)
-                .perform()
-            )
+            # Find and click the confirm/continue button
+            confirm = None
+            confirm_xp = read_xpath(login_user.__name__, "confirm")
+            try:
+                confirm = browser.find_element(By.XPATH, confirm_xp)
+                logger.info("- Found confirm button by xpath")
+            except NoSuchElementException:
+                pass
             
-            logger.info("- Clicked confirm button...")
+            # Try: div[role='button'] with Continue text (Bloks framework)
+            if confirm is None:
+                try:
+                    confirm = browser.find_element(
+                        By.XPATH,
+                        "//div[@role='button'][contains(.,'Continue') or contains(.,'Confirm')]"
+                    )
+                    logger.info("- Found confirm button (Bloks div[role='button'])")
+                except NoSuchElementException:
+                    pass
+            
+            # Try: any button on the page
+            if confirm is None:
+                try:
+                    confirm = browser.find_element(
+                        By.XPATH,
+                        "//button[not(contains(text(),'another way')) and not(contains(text(),'Back'))]"
+                    )
+                    logger.info("- Found confirm button (generic button)")
+                except NoSuchElementException:
+                    pass
+
+            if confirm is not None:
+                logger.info("- Clicking confirm/continue button...")
+                (
+                    ActionChains(browser)
+                    .move_to_element(confirm)
+                    .click()
+                    .perform()
+                )
+            else:
+                # Fallback: press ENTER on the code field
+                logger.info("- No confirm button found, pressing ENTER...")
+                (
+                    ActionChains(browser)
+                    .move_to_element(security_code)
+                    .send_keys(Keys.ENTER)
+                    .perform()
+                )
+            
+            logger.info("- 2FA code submitted...")
 
             # update server calls for both 'click' and 'send_keys' actions
             for _ in range(2):
