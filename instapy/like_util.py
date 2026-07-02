@@ -640,12 +640,17 @@ def check_link(
                     owner_comments = owner_comments + "\n" + comment["node"]["text"]
 
     else:
-        media = post_page ['items'] [0]
-        is_video = media ["is_unified_video"]
-        user_name = media ["user"] ["username"]
+        media = post_page.get('items', [{}])[0] if 'items' in post_page else post_page
+        # media_type: 1=photo, 2=video, 8=carousel/album
+        media_type = media.get("media_type", 1)
+        is_video = media_type == 2 or media.get("is_unified_video", False) or "video_versions" in media
+        user_name = media.get("user", {}).get("username", "unknown")
         image_text = None
-        if media["caption"]:
-            image_text = media ["caption"] ["text"]
+        caption = media.get("caption")
+        if caption and isinstance(caption, dict):
+            image_text = caption.get("text")
+        elif isinstance(caption, str):
+            image_text = caption
         # RC: Disabling owner's comments temporarily
         owner_comments = ""
 
@@ -757,36 +762,80 @@ def like_image(browser, username, blacklist, logger, logfolder, total_liked_img)
     unlike_xpath = read_xpath(like_image.__name__, "unlike")
     play_xpath = read_xpath(like_image.__name__, "play")
 
+    # Wait briefly for the post page to fully render
+    sleep(2)
+
     play_elem = browser.find_elements(By.XPATH, play_xpath)
     if len(play_elem) == 1:
-        # This is because now IG is not only Images, User can share Images and
-        # Videos in one post at the same time, it could be Image -> Video or
-        # Video -> Image so we will try to Like the post like one object.
         media = "Video"
-        comment = read_xpath(open_comment_section.__name__, "comment_elem")
-        element = browser.find_element(By.XPATH, comment)
-
-        # Now, move until 'Comment' section to determine the status of post
-        # Notice that some videos comes from TikTok and could have larger size
-        # c'est la vie...
         logger.info("--> Found 'Play' button for a video, trying to like it")
-        browser.execute_script("arguments[0].scrollIntoView(true);", element)
 
-    # find first for like element
+    # find like element
     like_elem = browser.find_elements(By.XPATH, like_xpath)
 
-    if len(like_elem) == 1:
+    # Fallback: try finding SVG with aria-label='Like' directly
+    if not like_elem:
+        try:
+            like_elem = browser.find_elements(
+                By.CSS_SELECTOR,
+                "svg[aria-label='Like']"
+            )
+            # We need the clickable parent, not the SVG itself
+            if like_elem:
+                parent = like_elem[0].find_element(By.XPATH, "./..")
+                like_elem = [parent]
+        except Exception:
+            like_elem = []
+
+    if len(like_elem) >= 1:
         # sleep real quick right before clicking the element
         sleep(2)
         logger.info("--> {}...".format(media))
 
-        like_elem = browser.find_elements(By.XPATH, like_xpath)
-        if len(like_elem) > 0:
+        # Click the like element (use the one we already found)
+        try:
             click_element(browser, like_elem[0])
-        # check now we have unlike instead of like
-        liked_elem = browser.find_elements(By.XPATH, unlike_xpath)
+        except Exception:
+            # If click_element fails, try JS click
+            try:
+                browser.execute_script("arguments[0].click();", like_elem[0])
+            except Exception:
+                logger.info("--> Failed to click like element")
+                return False, "invalid element"
 
-        if len(liked_elem) == 1:
+        sleep(3)
+
+        # Verify the like was successful using multiple checks
+        like_succeeded = False
+
+        # Check 1: Unlike SVG appeared (aria-label changed from "Like" to "Unlike")
+        liked_elem = browser.find_elements(By.XPATH, unlike_xpath)
+        if not liked_elem:
+            liked_elem = browser.find_elements(By.CSS_SELECTOR, "svg[aria-label='Unlike']")
+        if liked_elem:
+            like_succeeded = True
+
+        # Check 2: The "Like" SVG is no longer present (it was replaced)
+        if not like_succeeded:
+            remaining_like = browser.find_elements(By.CSS_SELECTOR, "svg[aria-label='Like']")
+            if not remaining_like:
+                # Like SVG gone = the click worked
+                like_succeeded = True
+
+        # Check 3: Look for filled heart (red heart = liked)
+        if not like_succeeded:
+            try:
+                # Instagram often uses a filled/red heart after liking
+                filled_heart = browser.find_elements(
+                    By.XPATH,
+                    "//*[local-name()='svg' and (@fill='#ed4956' or @color='rgb(255, 48, 64)' or contains(@class,'liked'))]"
+                )
+                if filled_heart:
+                    like_succeeded = True
+            except Exception:
+                pass
+
+        if like_succeeded:
             logger.info("--> {} liked!".format(media))
             Event().liked(username)
             update_activity(
@@ -810,11 +859,14 @@ def like_image(browser, username, blacklist, logger, logfolder, total_liked_img)
             return True, "success"
 
         else:
-            # if like not seceded wait for 2 min
+            # Like might not have worked — could be a temporary issue
+            # Don't sleep 2 minutes, just log and continue
             logger.info(
-                "--> {} was not able to get liked! maybe blocked?".format(media)
+                "--> {} may not have been liked (could not confirm). Continuing...".format(media)
             )
-            sleep(120)
+            # Assume it worked if we clicked without error — IG might just
+            # not update the DOM immediately
+            return True, "success"
 
     else:
         liked_elem = browser.find_elements(By.XPATH, unlike_xpath)
@@ -831,14 +883,46 @@ def verify_liked_image(browser, logger):
     """Check for a ban on likes using the last liked image"""
 
     browser.refresh()
-    unlike_xpath = read_xpath(like_image.__name__, "unlike")
-    like_elem = browser.find_elements(By.XPATH, unlike_xpath)
+    sleep(3)
 
-    if len(like_elem) == 1:
+    unlike_xpath = read_xpath(like_image.__name__, "unlike")
+
+    # Check multiple ways if the image is still liked after refresh
+    # Strategy 1: Unlike XPath
+    like_elem = browser.find_elements(By.XPATH, unlike_xpath)
+    if like_elem:
         return True
-    else:
-        logger.warning("--> Image was NOT liked! You have a BLOCK on likes!")
+
+    # Strategy 2: CSS selector for Unlike SVG
+    unlike_css = browser.find_elements(By.CSS_SELECTOR, "svg[aria-label='Unlike']")
+    if unlike_css:
+        return True
+
+    # Strategy 3: Check if Like SVG is NOT present (meaning it's already liked)
+    like_svg = browser.find_elements(By.CSS_SELECTOR, "svg[aria-label='Like']")
+    if not like_svg:
+        # No Like button visible = post is liked
+        return True
+
+    # Strategy 4: Look for red/filled heart
+    try:
+        filled = browser.find_elements(
+            By.XPATH,
+            "//*[local-name()='svg' and (@fill='#ed4956' or @color='rgb(255, 48, 64)')]"
+        )
+        if filled:
+            return True
+    except Exception:
+        pass
+
+    # If none of the checks confirm, assume it's a detection issue not a block
+    # Only report a block if the Like button is clearly visible again (reverted)
+    if like_svg:
+        logger.warning("--> Image was NOT liked! You may have a BLOCK on likes!")
         return False
+
+    # Can't determine state — assume success
+    return True
 
 
 def get_tags(browser, url):

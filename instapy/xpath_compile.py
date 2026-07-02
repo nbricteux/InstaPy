@@ -99,8 +99,10 @@ xpath["get_following_status"] = {
                                   text()='Requested' or \
                                   text()='Follow' or \
                                   text()='Follow Back' or \
-                                  text()='Unblock' and not(ancestor::*/@role = 'presentation')]",
-    "follow_span_XP_following": "//button/div/span[contains(@aria-label, 'Following')]",
+                                  text()='Unblock' and not(ancestor::*/@role = 'presentation')] | \
+                         //button[.//div[text()='Following' or text()='Requested' or text()='Follow' or text()='Follow Back' or text()='Unblock']] | \
+                         //div[@role='button'][text()='Follow' or text()='Following' or text()='Requested' or text()='Follow Back']",
+    "follow_span_XP_following": "//button/div/span[contains(@aria-label, 'Following')] | //button[.//*[contains(@aria-label, 'Following')]]",
 }
 
 xpath["get_follow_requests"] = {
@@ -160,8 +162,8 @@ xpath["like_comment"] = {
 }
 
 xpath["like_image"] = {
-    "like": "//*[contains(@class, '_aamw')]/button/div/*[*[local-name()='svg']/@aria-label='Like']/*",
-    "unlike": "//*[contains(@class, '_aamw')]/button/div/*[*[local-name()='svg']/@aria-label='Unlike']/*",
+    "like": "//*[local-name()='svg' and @aria-label='Like']/ancestor::*[self::button or self::div[@role='button'] or self::span[@role='button']][1] | //*[local-name()='svg'][@aria-label='Like']/.. | //span[@class and .//*[local-name()='svg']/@aria-label='Like']",
+    "unlike": "//*[local-name()='svg' and @aria-label='Unlike']/ancestor::*[self::button or self::div[@role='button'] or self::span[@role='button']][1] | //*[local-name()='svg'][@aria-label='Unlike']/.. | //span[@class and .//*[local-name()='svg']/@aria-label='Unlike']",
     "play": "//*/span[contains(@aria-label, 'Play')]",
 }
 

@@ -1184,14 +1184,49 @@ def get_number_of_posts(browser):
 def get_relationship_counts(browser, username, logger):
     """Gets the followers & following counts of a given user"""
 
-    # Navigate to the user's profile page (NOT the deprecated ?__a=1 API)
-    user_link = "https://www.instagram.com/{}/".format(username)
-
-    web_address_navigator(browser, user_link)
-    sleep(3)
-
     followers_count = None
     following_count = None
+
+    # Strategy 0: Try the web_profile_info API (fastest, no navigation needed)
+    try:
+        result = browser.execute_script("""
+            var username = arguments[0];
+            try {
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', '/api/v1/users/web_profile_info/?username=' + username, false);
+                xhr.setRequestHeader('X-IG-App-ID', '936619743392459');
+                xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+                xhr.send();
+                if (xhr.status === 200) {
+                    return xhr.responseText;
+                }
+            } catch(e) {}
+            return null;
+        """, username)
+
+        if result:
+            import json as _json
+            data = _json.loads(result)
+            user_data = data.get("data", {}).get("user", {})
+            fc = user_data.get("edge_followed_by", {}).get("count")
+            fgc = user_data.get("edge_follow", {}).get("count")
+            if fc is not None:
+                followers_count = fc
+                logger.info("- Followers count from API: {}".format(followers_count))
+            if fgc is not None:
+                following_count = fgc
+                logger.info("- Following count from API: {}".format(following_count))
+
+            if followers_count is not None and following_count is not None:
+                Event().profile_data_updated(username, followers_count, following_count)
+                return followers_count, following_count
+    except Exception:
+        pass
+
+    # Only navigate to profile page if API failed and we need DOM scraping
+    user_link = "https://www.instagram.com/{}/".format(username)
+    web_address_navigator(browser, user_link)
+    sleep(3)
 
     # Strategy 1: Try to get counts from profile page meta/header
     # Modern Instagram shows counts as text in the profile header
@@ -1794,57 +1829,68 @@ def get_username(browser, track, logger):
 def find_user_id(browser, track, username, logger):
     """Find the user ID from the loaded page"""
 
-    query = None
-    meta_XP = None
-
     logger.info(
         "Attempting to find user ID: Track: {}, Username {}".format(track, username)
     )
-    if track in ["dialog", "profile"]:
-        query = "return window.__additionalData[Object.keys(window.__additionalData)[0]].data.graphql.user.id"
 
-    elif track == "post":
-        query = "return window._sharedData.entry_data.ProfilePage[0].graphql.user.id"
-        meta_XP = read_xpath(find_user_id.__name__, "meta_XP")
+    # Strategy 1: Use web_profile_info API (most reliable)
+    try:
+        result = browser.execute_script("""
+            var username = arguments[0];
+            try {
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', '/api/v1/users/web_profile_info/?username=' + username, false);
+                xhr.setRequestHeader('X-IG-App-ID', '936619743392459');
+                xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+                xhr.send();
+                if (xhr.status === 200) {
+                    var data = JSON.parse(xhr.responseText);
+                    return data.data.user.id;
+                }
+            } catch(e) {}
+            return null;
+        """, username)
+        if result:
+            return str(result)
+    except Exception:
+        pass
 
-    failure_message = "Failed to get the user ID of '{}' from {} page!".format(
-        username, track
-    )
+    # Strategy 2: Try legacy window data
+    try:
+        user_id = browser.execute_script(
+            "return window.__additionalData[Object.keys(window.__additionalData)[0]].data.graphql.user.id"
+        )
+        if user_id:
+            return str(user_id)
+    except Exception:
+        pass
 
     try:
-        user_id = browser.execute_script(query)
+        user_id = browser.execute_script(
+            "return window._sharedData.entry_data.ProfilePage[0].graphql.user.id"
+        )
+        if user_id:
+            return str(user_id)
+    except Exception:
+        pass
 
-    except WebDriverException:
-        try:
-            browser.execute_script("location.reload()")
-            update_activity(browser, state=None)
+    # Strategy 3: Find in page source
+    try:
+        import re as _re
+        page_source = browser.page_source
+        match = _re.search(r'"profilePage_(\d+)"', page_source)
+        if match:
+            return match.group(1)
+        match = _re.search(r'"user_id"\s*:\s*"(\d+)"', page_source)
+        if match:
+            return match.group(1)
+    except Exception:
+        pass
 
-            user_id = browser.execute_script(
-                "return window._sharedData.entry_data.ProfilePage[0].graphql.user.id"
-            )
-
-        except WebDriverException:
-            if track == "post":
-                try:
-                    user_id = browser.find_element(By.XPATH, meta_XP).get_attribute(
-                        "content"
-                    )
-                    if user_id:
-                        user_id = format_number(user_id)
-
-                    else:
-                        logger.error("{}\t~empty string".format(failure_message))
-                        user_id = None
-
-                except NoSuchElementException:
-                    logger.error(failure_message)
-                    user_id = None
-
-            else:
-                logger.error(failure_message)
-                user_id = None
-
-    return user_id
+    logger.warning(
+        "Could not get user ID for '{}' — using 'unknown'".format(username)
+    )
+    return "unknown"
 
 
 @contextmanager
