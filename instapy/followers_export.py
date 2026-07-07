@@ -439,3 +439,159 @@ _SKIP_PATHS = {
     "archive", "saved", "close_friends", "discover", "web", "lite",
     "legal", "directory", "static", "two_factor",
 }
+
+
+def export_following(browser, username, logger, output_path=None, max_following=None):
+    """
+    Export following list (people you follow) using Instagram's internal GraphQL API.
+
+    Args:
+        browser: Selenium WebDriver instance (must be logged in)
+        username: Instagram username whose following to export
+        logger: Logger instance
+        output_path: Path to save JSON file (default: ./following_{username}.json)
+        max_following: Maximum number to collect (None = all)
+
+    Returns:
+        list: List of usernames you follow
+    """
+    logger.info("Starting following export for '{}'...".format(username))
+
+    # Get user ID
+    user_id = None
+    try:
+        result = browser.execute_script("""
+            var username = arguments[0];
+            try {
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', '/api/v1/users/web_profile_info/?username=' + username, false);
+                xhr.setRequestHeader('X-IG-App-ID', '936619743392459');
+                xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+                xhr.send();
+                if (xhr.status === 200) {
+                    var data = JSON.parse(xhr.responseText);
+                    return data.data.user.id;
+                }
+            } catch(e) {}
+            return null;
+        """, username)
+        if result:
+            user_id = str(result)
+            logger.info("- Got user ID: {}".format(user_id))
+    except Exception:
+        pass
+
+    if not user_id:
+        logger.error("Could not get user ID for '{}' — cannot retrieve following".format(username))
+        return []
+
+    # Fetch following via GraphQL API (query hash for following)
+    following = []
+    has_next = True
+    end_cursor = ""
+    batch_size = 50
+    request_count = 0
+
+    logger.info("- Fetching following list via API...")
+
+    while has_next:
+        request_count += 1
+
+        try:
+            result = browser.execute_script("""
+                var userId = arguments[0];
+                var after = arguments[1];
+                var first = arguments[2];
+
+                var variables = JSON.stringify({
+                    id: userId,
+                    include_reel: false,
+                    fetch_mutual: false,
+                    first: first,
+                    after: after
+                });
+
+                var url = '/graphql/query/?query_hash=d04b0a864b4b54837c0d870b0e77e076&variables=' + encodeURIComponent(variables);
+
+                try {
+                    var xhr = new XMLHttpRequest();
+                    xhr.open('GET', url, false);
+                    xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+                    xhr.send();
+                    if (xhr.status === 200) {
+                        return xhr.responseText;
+                    }
+                } catch(e) {}
+                return null;
+            """, user_id, end_cursor, batch_size)
+
+            if not result:
+                logger.warning("- GraphQL following query returned empty response")
+                break
+
+            data = json.loads(result)
+
+            if "error" in data or "data" not in data:
+                logger.warning("- GraphQL API error for following")
+                break
+
+            edge_data = data.get("data", {}).get("user", {}).get("edge_follow", {})
+            if not edge_data:
+                logger.warning("- Unexpected API response structure for following")
+                break
+
+            edges = edge_data.get("edges", [])
+            page_info = edge_data.get("page_info", {})
+
+            for edge in edges:
+                node = edge.get("node", {})
+                uname = node.get("username")
+                if uname:
+                    following.append(uname)
+
+            has_next = page_info.get("has_next_page", False)
+            end_cursor = page_info.get("end_cursor", "")
+
+            if request_count % 5 == 0:
+                logger.info("- Fetched {} following so far...".format(len(following)))
+
+            if max_following and len(following) >= max_following:
+                following = following[:max_following]
+                break
+
+            if has_next:
+                sleep(0.5)
+
+        except Exception as e:
+            logger.error("- Error fetching following: {}".format(str(e)))
+            break
+
+    following_list = sorted(following)
+    logger.info("- Total following collected: {}".format(len(following_list)))
+
+    # Save to JSON file
+    if output_path is None:
+        output_path = "following_{}.json".format(username)
+
+    try:
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "username": username,
+                "count": len(following_list),
+                "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "following": following_list
+            }, f, indent=2, ensure_ascii=False)
+        logger.info("- Following saved to: {}".format(os.path.abspath(output_path)))
+    except Exception as e:
+        logger.warning("- Failed to save following JSON: {}".format(str(e)))
+
+    # Print for easy copy-paste
+    print("\n" + "=" * 70)
+    print("FOLLOWING LIST FOR '{}' ({} total)".format(username, len(following_list)))
+    print("=" * 70)
+    print("\nCopy-paste for 'friends' variable:")
+    formatted = "[{}]".format(",".join("'{}'".format(f) for f in following_list))
+    print("friends = {}".format(formatted))
+    print("\n" + "=" * 70)
+
+    return following_list

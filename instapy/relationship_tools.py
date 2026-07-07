@@ -35,16 +35,9 @@ def get_followers(
     logfolder,
     verified_only=False,
 ):
-    """Get entire list of followers using graphql queries."""
+    """Get entire list of followers using the internal API via XHR."""
 
-    # Variables
-    user_data = {}
-    variables = {}
     all_followers = []
-    sc_rolled = 0
-    grab_notifier = False
-    local_read_failure = False
-    passed_time = "time loop"
 
     if username not in relationship_data:
         relationship_data.update({username: {"all_following": [], "all_followers": []}})
@@ -62,263 +55,137 @@ def get_followers(
         "Retrieving {} `Followers` data of {} {}".format(tense, username, grab_info)
     )
 
-    user_link = "https://www.instagram.com/{}/".format(username)
-    web_address_navigator(browser, user_link)
-
     # Get followers count
     followers_count, _ = get_relationship_counts(browser, username, logger)
 
-    if grab != "full" and grab > followers_count:
+    if followers_count is None:
+        followers_count = 0
+
+    if grab != "full" and isinstance(grab, int) and grab > followers_count:
         logger.info(
             "You have requested higher amount than existing followers count "
             " ~gonna grab all available"
         )
         grab = followers_count
 
-    # Check if user's account is private and we don't follow
-    following_status, _ = get_following_status(
-        browser, "profile", self_username, username, None, logger, logfolder
-    )
+    # Get user ID via API
+    user_id = None
+    try:
+        result = browser.execute_script("""
+            var username = arguments[0];
+            try {
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', '/api/v1/users/web_profile_info/?username=' + username, false);
+                xhr.setRequestHeader('X-IG-App-ID', '936619743392459');
+                xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+                xhr.send();
+                if (xhr.status === 200) {
+                    var data = JSON.parse(xhr.responseText);
+                    return data.data.user.id;
+                }
+            } catch(e) {}
+            return null;
+        """, username)
+        if result:
+            user_id = str(result)
+    except Exception:
+        pass
 
-    is_private = is_private_profile(browser, logger, following_status == "Following")
-
-    if not username == self_username and (
-        is_private is None
-        or (is_private is True and following_status not in ["Following", True])
-        or (following_status == "Blocked")
-    ):
-        logger.info(
-            "This user is private and we are not following. '{}':'{}'".format(
-                is_private, following_status
-            )
-        )
-        # Changed False to all_followers[], all_followers is empty
+    if not user_id:
+        logger.error("Could not get user ID for '{}' — cannot retrieve followers".format(username))
         return all_followers
 
-    # sets the amount of usernames to be matched in the next queries
-    match = (
-        None
-        if live_match is True
-        else 10
-        if relationship_data[username]["all_followers"]
-        else None
-    )
+    # Fetch followers via GraphQL API using XHR from the browser
+    has_next = True
+    end_cursor = ""
+    batch_size = 50
+    request_count = 0
+    max_amount = followers_count if grab == "full" else grab
 
-    # if there has been prior graphql query, use that existing data to speed
-    # up querying time
-    all_prior_followers = (
-        relationship_data[username]["all_followers"] if match is not None else None
-    )
+    logger.info("- Fetching followers via API (user_id: {}, target: {})...".format(user_id, max_amount))
 
-    graphql_endpoint = "view-source:https://www.instagram.com/graphql/query/"
-    graphql_followers = (
-        graphql_endpoint + "?query_hash=37479f2b8209594dde7facb0d904896a"
-    )
+    while has_next and len(all_followers) < max_amount:
+        request_count += 1
 
-    try:
-        user_data["id"] = browser.execute_script(
-            "return window.__additionalData[Object.keys(window.__additionalData)[0]].data."
-            "graphql.user.id"
-        )
-    except WebDriverException:
-        user_data["id"] = browser.execute_script(
-            "return window._sharedData.entry_data.ProfilePage[0].graphql.user.id"
-        )
-
-    variables["id"] = user_data["id"]
-    variables["first"] = 50
-
-    # get follower and user loop
-    try:
-        has_next_data = True
-        filename = None
-        graphql_queries = None
-        query_date = None
-
-        url = "{}&variables={}".format(graphql_followers, str(json.dumps(variables)))
-        web_address_navigator(browser, url)
-
-        # Get stored graphql queries data to be used
         try:
-            filename = "{}graphql_queries.json".format(logfolder)
-            query_date = datetime.today().strftime("%d-%m-%Y")
+            result = browser.execute_script("""
+                var userId = arguments[0];
+                var after = arguments[1];
+                var first = arguments[2];
+                
+                var variables = JSON.stringify({
+                    id: userId,
+                    include_reel: false,
+                    fetch_mutual: false,
+                    first: first,
+                    after: after
+                });
+                
+                var url = '/graphql/query/?query_hash=c76146de99bb02f6415203be841dd25a&variables=' + encodeURIComponent(variables);
+                
+                try {
+                    var xhr = new XMLHttpRequest();
+                    xhr.open('GET', url, false);
+                    xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+                    xhr.send();
+                    if (xhr.status === 200) {
+                        return xhr.responseText;
+                    }
+                } catch(e) {}
+                return null;
+            """, user_id, end_cursor, batch_size)
 
-            if not os.path.isfile(filename):
-                with interruption_handler():
-                    with open(filename, "w") as graphql_queries_file:
-                        json.dump(
-                            {username: {query_date: {"sc_rolled": 0}}},
-                            graphql_queries_file,
-                        )
-                        graphql_queries_file.close()
-
-            # load the existing graphql queries data
-            with open(filename) as graphql_queries_file:
-                graphql_queries = json.load(graphql_queries_file)
-                stored_usernames = list(name for name, date in graphql_queries.items())
-
-                if username not in stored_usernames:
-                    graphql_queries[username] = {query_date: {"sc_rolled": 0}}
-                stored_query_dates = list(
-                    date for date, score in graphql_queries[username].items()
-                )
-
-                if query_date not in stored_query_dates:
-                    graphql_queries[username][query_date] = {"sc_rolled": 0}
-        except Exception as exc:
-            logger.info(
-                "Error occurred while getting `scroll` data from "
-                "graphql_queries.json\n{}\n".format(str(exc).encode("utf-8"))
-            )
-            local_read_failure = True
-
-        start_time = time.time()
-        highest_value = followers_count if grab == "full" else grab
-        # fetch all user while still has data
-        while has_next_data:
-            try:
-                pre = browser.find_element(By.TAG_NAME, "pre").text
-            except NoSuchElementException as exc:
-                logger.info(
-                    "Encountered an error to find `pre` in page!"
-                    "\t~grabbed {} usernames \n\t{}".format(
-                        len(set(all_followers)), str(exc).encode("utf-8")
-                    )
-                )
-                return all_followers
-
-            data = json.loads(pre)["data"]
-
-            # get followers
-            page_info = data["user"]["edge_followed_by"]["page_info"]
-            edges = data["user"]["edge_followed_by"]["edges"]
-            for user in edges:
-                # If verified_only is True, determine if user is verified before adding to all_followers
-                if verified_only:
-                    if user["node"]["is_verified"]:
-                        all_followers.append(user["node"]["username"])
-                else:
-                    all_followers.append(user["node"]["username"])
-
-            grabbed = len(set(all_followers))
-
-            # write & update records at Progress Tracker
-            progress_tracker(grabbed, highest_value, start_time, logger)
-            print("\n")
-
-            finish_time = time.time()
-            diff_time = finish_time - start_time
-            diff_n, diff_s = (
-                (diff_time / 60 / 60, "hours")
-                if diff_time / 60 / 60 >= 1
-                else (diff_time / 60, "minutes")
-                if diff_time / 60 >= 1
-                else (diff_time, "seconds")
-            )
-            diff_n = truncate_float(diff_n, 2)
-            passed_time = "{} {}".format(diff_n, diff_s)
-
-            if match is not None:
-                matched_followers = len(set(all_followers)) - len(
-                    set(all_followers) - set(all_prior_followers)
-                )
-                if matched_followers >= match:
-                    new_followers = set(all_followers) - set(all_prior_followers)
-                    all_followers = all_followers + all_prior_followers
-                    logger.info(
-                        "Grabbed {} new usernames from `Followers` in {}  "
-                        "~total of {} usernames".format(
-                            len(set(new_followers)),
-                            passed_time,
-                            len(set(all_followers)),
-                        )
-                    )
-                    grab_notifier = True
-                    break
-
-            if grab != "full" and grabbed >= grab:
-                logger.info(
-                    "Grabbed {} usernames from `Followers` as requested at {}".format(
-                        grabbed, passed_time
-                    )
-                )
-                grab_notifier = True
+            if not result:
+                logger.warning("- GraphQL followers query returned empty response")
                 break
 
-            has_next_data = page_info["has_next_page"]
-            if has_next_data:
-                variables["after"] = page_info["end_cursor"]
+            data = json.loads(result)
 
-                url = "{}&variables={}".format(
-                    graphql_followers, str(json.dumps(variables))
-                )
+            if "error" in data or "data" not in data:
+                logger.warning("- GraphQL API error or unexpected response")
+                break
 
-                web_address_navigator(browser, url)
-                sc_rolled += 1
+            edge_data = data.get("data", {}).get("user", {}).get("edge_followed_by", {})
+            if not edge_data:
+                logger.warning("- Unexpected API response structure")
+                break
 
-                # dump the current graphql queries data
-                if local_read_failure is not True:
-                    try:
-                        with interruption_handler():
-                            with open(filename, "w") as graphql_queries_file:
-                                graphql_queries[username][query_date]["sc_rolled"] += 1
-                                json.dump(graphql_queries, graphql_queries_file)
-                    except Exception as exc:
-                        logger.info(
-                            "Error occurred while writing `scroll` data to "
-                            "graphql_queries.json\n{}\n".format(
-                                str(exc).encode("utf-8")
-                            )
-                        )
+            edges = edge_data.get("edges", [])
+            page_info = edge_data.get("page_info", {})
 
-                # take breaks gradually
-                if sc_rolled > 91:
-                    logger.info("Queried too much! ~ sleeping a bit :>")
-                    sleep(600)
-                    sc_rolled = 0
+            for edge in edges:
+                node = edge.get("node", {})
+                uname = node.get("username")
+                if uname:
+                    all_followers.append(uname)
 
-    except BaseException as exc:
-        logger.info(
-            "Unable to get `Followers` data:\n\t{}\n".format(str(exc).encode("utf-8"))
-        )
+            has_next = page_info.get("has_next_page", False)
+            end_cursor = page_info.get("end_cursor", "")
 
-    # remove possible duplicates
-    all_followers = sorted(set(all_followers), key=lambda x: all_followers.index(x))
+            if request_count % 10 == 0:
+                logger.info("- Fetched {} followers so far...".format(len(all_followers)))
 
-    if grab_notifier is False:
-        logger.info(
-            "Grabbed {} usernames from `Followers` in {}".format(
-                len(all_followers), passed_time
-            )
-        )
+            # Rate limiting
+            if has_next:
+                sleep(0.5)
 
-    if len(all_followers) > 0:
-        if (
-            store_locally is True
-            and relationship_data[username]["all_followers"] != all_followers
-        ):
-            store_followers_data(username, grab, all_followers, logger, logfolder)
-        elif store_locally is True:
-            logger.info(
-                "The `Followers` data is identical with the data in previous "
-                "query  ~not storing the file again"
-            )
+        except Exception as e:
+            logger.error("Sorry, an error occurred: {}".format(str(e)))
+            break
 
-        if grab == "full":
-            relationship_data[username].update({"all_followers": all_followers})
+    logger.info("- Total followers retrieved: {}".format(len(all_followers)))
 
-    sleep_t = sc_rolled * 6
-    sleep_t = sleep_t if sleep_t < 600 else random.randint(585, 655)
-    sleep_n, sleep_s = (
-        (sleep_t / 60, "minutes") if sleep_t / 60 >= 1 else (sleep_t, "seconds")
-    )
-    sleep_n = truncate_float(sleep_n, 4)
+    # Update relationship data
+    relationship_data[username]["all_followers"] = all_followers
 
-    logger.info(
-        "Zz :[ time to take a good nap  ~sleeping {} {}".format(sleep_n, sleep_s)
-    )
-    sleep(sleep_t)
-    logger.info("Yawn :] let's go!\n")
+    # Store locally if requested
+    if store_locally and all_followers:
+        try:
+            store_path = "{}followers_{}.json".format(logfolder, username)
+            with open(store_path, "w") as f:
+                json.dump(all_followers, f)
+        except Exception:
+            pass
 
     return all_followers
 

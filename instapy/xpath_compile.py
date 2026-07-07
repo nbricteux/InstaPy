@@ -33,7 +33,7 @@ xpath["class_selectors"] = {
     "likes_dialog_close_xpath": "//*[*[local-name()='svg']/@aria-label='Close']",
 }
 
-xpath["confirm_unfollow"] = {"button_xp": "//button[text()='Unfollow']"}
+xpath["confirm_unfollow"] = {"button_xp": "//button[text()='Unfollow'] | //*[text()='Unfollow'][ancestor::div[@role='dialog' or @role='menu' or @role='presentation']] | //div[@role='button'][text()='Unfollow'] | //span[text()='Unfollow']/ancestor::*[@role='button' or self::button][1]"}
 
 xpath["dialog_username_extractor"] = {"person": "../../*"}
 

@@ -1412,28 +1412,27 @@ def unfollow_user(
 
 
 def confirm_unfollow(browser):
-    """Deal with the confirmation dialog boxes during an unfollow"""
+    """Deal with the confirmation dialog/bottom sheet during an unfollow"""
     attempt = 0
 
     while attempt < 3:
         try:
             attempt += 1
-            button_xp = read_xpath(
-                confirm_unfollow.__name__, "button_xp"
-            )  # "//button[contains(
-            # text(), 'Unfollow')]"
+            button_xp = read_xpath(confirm_unfollow.__name__, "button_xp")
             unfollow_button = browser.find_element(By.XPATH, button_xp)
 
             if unfollow_button.is_displayed():
-                click_element(browser, unfollow_button)
+                try:
+                    click_element(browser, unfollow_button)
+                except Exception:
+                    # Fallback: JS click
+                    browser.execute_script("arguments[0].click();", unfollow_button)
                 sleep(2)
                 break
 
         except (ElementNotVisibleException, NoSuchElementException) as exc:
-            # prob confirm dialog didn't pop up
             if isinstance(exc, ElementNotVisibleException):
                 break
-
             elif isinstance(exc, NoSuchElementException):
                 sleep(1)
 

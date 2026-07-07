@@ -4573,6 +4573,27 @@ class InstaPy:
             self.browser, username, self.logger, output_path, max_followers
         )
 
+    def export_following(self, username=None, output_path=None, max_following=None):
+        """
+        Export following list (people you follow) to JSON file via API.
+
+        Args:
+            username: Username whose following to export (default: self)
+            output_path: Path to save JSON file (default: ./following_{username}.json)
+            max_following: Maximum number to collect (None = all)
+
+        Returns:
+            list: List of usernames you follow
+        """
+        from .followers_export import export_following as _export_following
+
+        if username is None:
+            username = self.username
+
+        return _export_following(
+            self.browser, username, self.logger, output_path, max_following
+        )
+
     def grab_following(
         self,
         username: str = None,

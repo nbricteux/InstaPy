@@ -1829,7 +1829,7 @@ def get_username(browser, track, logger):
 def find_user_id(browser, track, username, logger):
     """Find the user ID from the loaded page"""
 
-    logger.info(
+    logger.debug(
         "Attempting to find user ID: Track: {}, Username {}".format(track, username)
     )
 
