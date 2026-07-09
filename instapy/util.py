@@ -1181,8 +1181,17 @@ def get_number_of_posts(browser):
     return num_of_posts
 
 
+_relationship_cache = {}
+
+
 def get_relationship_counts(browser, username, logger):
     """Gets the followers & following counts of a given user"""
+
+    # Check cache first to avoid repeated API calls
+    if username in _relationship_cache:
+        cached = _relationship_cache[username]
+        logger.info("- Followers/following from cache: {}/{}".format(cached[0], cached[1]))
+        return cached
 
     followers_count = None
     following_count = None
@@ -1219,6 +1228,7 @@ def get_relationship_counts(browser, username, logger):
 
             if followers_count is not None and following_count is not None:
                 Event().profile_data_updated(username, followers_count, following_count)
+                _relationship_cache[username] = (followers_count, following_count)
                 return followers_count, following_count
     except Exception:
         pass
@@ -1345,6 +1355,8 @@ def get_relationship_counts(browser, username, logger):
         )
 
     Event().profile_data_updated(username, followers_count, following_count)
+    if followers_count is not None and following_count is not None:
+        _relationship_cache[username] = (followers_count, following_count)
     return followers_count, following_count
 
 
