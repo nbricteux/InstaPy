@@ -120,42 +120,78 @@ def get_links_for_location(
 
     location_link = "https://www.instagram.com/explore/locations/{}".format(location)
     web_address_navigator(browser, location_link)
+    sleep(3)
 
-    top_elements = browser.find_element(
-        By.XPATH, read_xpath(get_links_for_location.__name__, "top_elements")
-    )
-    top_posts = top_elements.find_elements(By.TAG_NAME, "a")
-    sleep(1)
-
-    if skip_top_posts:
-        main_elem = browser.find_element(
-            By.XPATH, read_xpath(get_links_for_location.__name__, "main_elem")
-        )
-    else:
-        main_elem = browser.find_element(By.TAG_NAME, "main")
-
-    link_elems = main_elem.find_elements(By.TAG_NAME, "a")
-    sleep(1)
-
-    if not link_elems:  # this location does not have `Top Posts` or it
-        # really is empty..
-        main_elem = browser.find_element(
-            By.XPATH, get_links_for_location.__name__, "top_elements"
-        )
-        top_posts = []
+    # Scroll down a random amount to get past top/recent posts and load more variety
+    scroll_times = random.randint(2, 5)
+    for _ in range(scroll_times):
+        browser.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        sleep(random.uniform(1.5, 3))
+    # Scroll back up a bit so we capture a mix of posts
+    browser.execute_script("window.scrollTo(0, document.body.scrollHeight / 3);")
     sleep(2)
 
+    # Find post links on the location page using multiple strategies
+    link_elems = []
+    main_elem = None
+    top_posts = []
+
+    # Strategy 1: Find all post links (links containing /p/) in the main area
+    try:
+        main_elem = browser.find_element(By.TAG_NAME, "main")
+        link_elems = main_elem.find_elements(By.XPATH, ".//a[contains(@href,'/p/')]")
+        if link_elems:
+            logger.info("- Found {} post links via /p/ href pattern".format(len(link_elems)))
+    except NoSuchElementException:
+        pass
+
+    # Strategy 2: Try the classic article/div structure
+    if not link_elems:
+        try:
+            top_elements = browser.find_element(
+                By.XPATH, read_xpath(get_links_for_location.__name__, "top_elements")
+            )
+            top_posts = top_elements.find_elements(By.TAG_NAME, "a")
+            if skip_top_posts:
+                main_elem = browser.find_element(
+                    By.XPATH, read_xpath(get_links_for_location.__name__, "main_elem")
+                )
+            else:
+                main_elem = browser.find_element(By.TAG_NAME, "main")
+            link_elems = main_elem.find_elements(By.TAG_NAME, "a")
+        except NoSuchElementException:
+            pass
+
+    # Strategy 3: Find any links to posts on the entire page
+    if not link_elems:
+        try:
+            link_elems = browser.find_elements(By.XPATH, "//a[contains(@href,'/p/')]")
+            main_elem = browser.find_element(By.TAG_NAME, "main") if not main_elem else main_elem
+            if link_elems:
+                logger.info("- Found {} post links on page (broad search)".format(len(link_elems)))
+        except NoSuchElementException:
+            pass
+
+    if not link_elems:
+        logger.warning(
+            "Error occurred while getting images from location: {}  "
+            "~maybe too few images exist".format(location)
+        )
+        return []
+
+    if main_elem is None:
+        main_elem = browser.find_element(By.TAG_NAME, "main")
+
+    sleep(1)
+
+    # Get possible posts count (optional, for logging)
+    possible_posts = None
     try:
         possible_posts = browser.execute_script(
             "return window._sharedData.entry_data."
             "LocationsPage[0].graphql.location.edge_location_to_media.count"
         )
-
-    except WebDriverException:
-        logger.info(
-            "Failed to get the amount of possible posts in '{}' "
-            "location".format(location)
-        )
+    except Exception:
         possible_posts = None
 
     logger.info(
@@ -177,8 +213,20 @@ def get_links_for_location(
         # written there, it may be cos of some posts is deleted but still
         # keeps counted for the location
 
-    # Get links
-    links = get_links(browser, location, logger, media, main_elem)
+    # Get links - use the ones we already found to avoid stale element issues
+    links = []
+    for link_elem in link_elems:
+        try:
+            href = link_elem.get_attribute("href")
+            if href and "/p/" in href:
+                links.append(href)
+        except Exception:
+            continue
+
+    # If initial extraction failed, try get_links as fallback
+    if not links:
+        links = get_links(browser, location, logger, media, main_elem)
+
     filtered_links = len(links)
     try_again = 0
     sc_rolled = 0
@@ -366,8 +414,19 @@ def get_links_for_tag(browser, tag, amount, skip_top_posts, randomize, media, lo
     # written there, it may be cos of some posts is deleted but still keeps
     # counted for the tag
 
-    # Get links
-    links = get_links(browser, tag, logger, media, main_elem)
+    # Get links - use the ones we already found to avoid stale element issues
+    links = []
+    for link_elem in link_elems:
+        try:
+            href = link_elem.get_attribute("href")
+            if href and "/p/" in href:
+                links.append(href)
+        except Exception:
+            continue
+
+    # If initial extraction failed, try get_links as fallback
+    if not links:
+        links = get_links(browser, tag, logger, media, main_elem)
     # Disabling this are there are only 9 "Top Posts" now
     filtered_links = 1
     try_again = 0
@@ -952,7 +1011,8 @@ def get_links(browser, page, logger, media, element):
 
     try:
         # Get image links in scope from hashtag, location and other pages
-        link_elems = element.find_elements(By.XPATH, '//a[starts-with(@href, "/p/")]')
+        # Use browser directly to avoid stale element references
+        link_elems = browser.find_elements(By.XPATH, '//a[starts-with(@href, "/p/")]')
         sleep(random.randint(1, 3))
 
         if link_elems:

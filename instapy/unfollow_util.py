@@ -1319,6 +1319,8 @@ def unfollow_user(
             browser, track, username, person, person_id, logger, logfolder
         )
 
+        logger.info("--> Follow status of '{}': '{}'".format(person, following_status))
+
         if following_status in ["Following", "Requested"]:
             click_element(browser, follow_button)  # click to unfollow
             sleep(4)  # TODO: use explicit wait here
