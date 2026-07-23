@@ -769,9 +769,9 @@ def check_link(
                 "Not mandatory likes",
             )
 
-    image_text_lower = [x.lower() for x in image_text]
+    image_text_lower = image_text.lower()
     ignore_if_contains_lower = [x.lower() for x in ignore_if_contains]
-    if any((word in image_text_lower for word in ignore_if_contains_lower)):
+    if any(word in image_text_lower for word in ignore_if_contains_lower):
         return False, user_name, is_video, "None", "Pass"
 
     dont_like_regex = []
