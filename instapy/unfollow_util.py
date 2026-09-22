@@ -19,6 +19,7 @@ from selenium.webdriver.common.by import By
 from .database_engine import get_database
 from .event import Event
 from .follow_util import get_following_status
+from .ig_api import is_list_complete
 from .print_log_writer import (
     get_log_time,
     log_followed_pool,
@@ -281,6 +282,20 @@ def unfollow(
                     logger,
                     logfolder,
                 )
+
+                # A partial followers list would make real followers look like
+                # non-followers and get them unfollowed - refuse to go on.
+                followers_count, _ = get_relationship_counts(browser, username, logger)
+                if not is_list_complete(all_followers, followers_count):
+                    logger.error(
+                        "Only retrieved {} of {} followers - the list is incomplete, "
+                        "skipping `nonfollowers` unfollow to avoid unfollowing "
+                        "people who follow you back".format(
+                            len(all_followers), followers_count
+                        )
+                    )
+                    return 0
+
                 loyal_users = [user for user in unfollow_list if user in all_followers]
                 logger.info(
                     "Found {} loyal followers!  ~will not unfollow "

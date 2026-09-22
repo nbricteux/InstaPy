@@ -12,6 +12,7 @@ from selenium.webdriver.common.by import By
 
 # import InstaPy modules
 from .follow_util import get_following_status
+from .ig_api import fetch_relationship_list, get_user_id
 from .time_util import sleep
 from .util import (
     get_relationship_counts,
@@ -61,7 +62,12 @@ def get_followers(
     if followers_count is None:
         followers_count = 0
 
-    if grab != "full" and isinstance(grab, int) and grab > followers_count:
+    if (
+        grab != "full"
+        and isinstance(grab, int)
+        and followers_count > 0
+        and grab > followers_count
+    ):
         logger.info(
             "You have requested higher amount than existing followers count "
             " ~gonna grab all available"
@@ -69,109 +75,19 @@ def get_followers(
         grab = followers_count
 
     # Get user ID via API
-    user_id = None
-    try:
-        result = browser.execute_script("""
-            var username = arguments[0];
-            try {
-                var xhr = new XMLHttpRequest();
-                xhr.open('GET', '/api/v1/users/web_profile_info/?username=' + username, false);
-                xhr.setRequestHeader('X-IG-App-ID', '936619743392459');
-                xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
-                xhr.send();
-                if (xhr.status === 200) {
-                    var data = JSON.parse(xhr.responseText);
-                    return data.data.user.id;
-                }
-            } catch(e) {}
-            return null;
-        """, username)
-        if result:
-            user_id = str(result)
-    except Exception:
-        pass
+    user_id = get_user_id(browser, username, logger)
 
     if not user_id:
-        logger.error("Could not get user ID for '{}' — cannot retrieve followers".format(username))
+        logger.error(
+            "Could not get user ID for '{}' - cannot retrieve followers".format(username)
+        )
         return all_followers
 
-    # Fetch followers via GraphQL API using XHR from the browser
-    has_next = True
-    end_cursor = ""
-    batch_size = 50
-    request_count = 0
     max_amount = followers_count if grab == "full" else grab
 
-    logger.info("- Fetching followers via API (user_id: {}, target: {})...".format(user_id, max_amount))
-
-    while has_next and len(all_followers) < max_amount:
-        request_count += 1
-
-        try:
-            result = browser.execute_script("""
-                var userId = arguments[0];
-                var after = arguments[1];
-                var first = arguments[2];
-                
-                var variables = JSON.stringify({
-                    id: userId,
-                    include_reel: false,
-                    fetch_mutual: false,
-                    first: first,
-                    after: after
-                });
-                
-                var url = '/graphql/query/?query_hash=c76146de99bb02f6415203be841dd25a&variables=' + encodeURIComponent(variables);
-                
-                try {
-                    var xhr = new XMLHttpRequest();
-                    xhr.open('GET', url, false);
-                    xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
-                    xhr.send();
-                    if (xhr.status === 200) {
-                        return xhr.responseText;
-                    }
-                } catch(e) {}
-                return null;
-            """, user_id, end_cursor, batch_size)
-
-            if not result:
-                logger.warning("- GraphQL followers query returned empty response")
-                break
-
-            data = json.loads(result)
-
-            if "error" in data or "data" not in data:
-                logger.warning("- GraphQL API error or unexpected response")
-                break
-
-            edge_data = data.get("data", {}).get("user", {}).get("edge_followed_by", {})
-            if not edge_data:
-                logger.warning("- Unexpected API response structure")
-                break
-
-            edges = edge_data.get("edges", [])
-            page_info = edge_data.get("page_info", {})
-
-            for edge in edges:
-                node = edge.get("node", {})
-                uname = node.get("username")
-                if uname:
-                    all_followers.append(uname)
-
-            has_next = page_info.get("has_next_page", False)
-            end_cursor = page_info.get("end_cursor", "")
-
-            if request_count % 10 == 0:
-                logger.info("- Fetched {} followers so far...".format(len(all_followers)))
-
-            # Rate limiting
-            if has_next:
-                sleep(0.5)
-
-        except Exception as e:
-            logger.error("Sorry, an error occurred: {}".format(str(e)))
-            break
+    all_followers = fetch_relationship_list(
+        browser, user_id, "followers", logger, max_amount=max_amount
+    )
 
     logger.info("- Total followers retrieved: {}".format(len(all_followers)))
 
